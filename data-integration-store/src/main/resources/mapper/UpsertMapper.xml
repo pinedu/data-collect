@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.renhe.di.store.mapper.UpsertMapper">
+
+    <!-- 通用批量 UPSERT：INSERT ON DUPLICATE KEY UPDATE -->
+    <insert id="upsertBatch">
+        INSERT INTO ${tableName}
+        <foreach collection="columns" item="col" open="(" separator="," close=")">
+            ${col.columnName}
+        </foreach>
+        VALUES
+        <foreach collection="list" item="item" separator=",">
+            <foreach collection="columns" item="col" open="(" separator="," close=")">
+                <choose>
+                    <when test="col.columnName == 'ext_data'">
+                        #{item.${col.propertyName},typeHandler=com.renhe.di.store.handler.JsonbTypeHandler}
+                    </when>
+                    <otherwise>
+                        #{item.${col.propertyName}}
+                    </otherwise>
+                </choose>
+            </foreach>
+        </foreach>
+        ON DUPLICATE KEY UPDATE
+        <foreach collection="columns" item="col" separator=",">
+            ${col.columnName} = VALUES(${col.columnName})
+        </foreach>
+    </insert>
+
+</mapper>

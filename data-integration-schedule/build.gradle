@@ -1,0 +1,12 @@
+dependencies {
+    implementation project(':data-integration-core')
+    implementation project(':data-integration-api')
+    implementation project(':data-integration-collect')
+    implementation project(':data-integration-clean')
+    implementation project(':data-integration-store')
+    implementation project(':data-integration-dispatch')
+
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis'
+    implementation 'com.baomidou:mybatis-plus-spring-boot3-starter:3.5.6'
+}
