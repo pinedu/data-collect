@@ -1,0 +1,7 @@
+dependencies {
+    implementation project(':data-integration-core')
+    implementation project(':data-integration-api')
+    implementation project(':data-integration-store')
+
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+}

@@ -1,0 +1,13 @@
+rootProject.name = 'data-integration-service'
+
+include 'data-integration-api'
+include 'data-integration-core'
+include 'data-integration-collect'
+include 'data-integration-clean'
+include 'data-integration-store'
+include 'data-integration-dispatch'
+include 'data-integration-schedule'
+include 'data-integration-wechat'
+include 'data-integration-ai'
+include 'data-integration-asr'
+include 'data-integration-bootstrap'

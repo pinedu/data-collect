@@ -5,10 +5,22 @@
 **/.gradle
 # Log file
 *.log
-
+data-integration-bootstrap/src/main/resources/**.yml
+**/models
+data-integration-dashboard/node_modules
+data-integration-dashboard/dist
+data-integration-dashboard/package-lock.json
 # BlueJ files
 *.ctxt
-
+.gradle
+gradle
+.qoderignore
+.qoder
+logs
+docker-compose.yml
+gradlew
+gradlew.bat
+start.sh
 # Mobile Tools for Java (J2ME)
 .mtj.tmp/
 

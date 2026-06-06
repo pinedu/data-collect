@@ -1,0 +1,4 @@
+dependencies {
+    // 纯API模块，不依赖Spring Boot Starter
+    // 只包含DTO、VO、异常定义等
+}

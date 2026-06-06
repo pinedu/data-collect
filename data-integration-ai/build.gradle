@@ -1,0 +1,24 @@
+dependencies {
+    implementation project(':data-integration-core')
+    implementation project(':data-integration-store')
+
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+
+    // Spring AI OpenAI Starter (GA) — DeepSeek 使用
+    implementation 'org.springframework.ai:spring-ai-starter-model-openai:1.0.0'
+
+    // Spring AI Anthropic Starter — Kimi 使用 Claude API 格式
+    implementation 'org.springframework.ai:spring-ai-starter-model-anthropic:1.0.0'
+
+    // MyBatis-Plus（继承自 store，但显式声明确保可用）
+    implementation 'com.baomidou:mybatis-plus-spring-boot3-starter:3.5.6'
+
+    // JDBC（Text-to-SQL 需要直接执行 SQL）
+    implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+
+    // 会话记忆持久化到数据库（重启不丢失）
+    implementation 'org.springframework.ai:spring-ai-starter-model-chat-memory-repository-jdbc:1.0.0'
+
+    // WebClient：调用远程 Agent HTTPS 流式接口
+    implementation 'org.springframework.boot:spring-boot-starter-webflux'
+}
