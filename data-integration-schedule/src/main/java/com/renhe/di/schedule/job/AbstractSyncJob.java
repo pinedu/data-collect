@@ -87,16 +87,20 @@ public abstract class AbstractSyncJob {
     };
 
     /**
-     * 检测异常消息是否包含风控/反爬虫关键词
+     * 检测异常消息是否包含风控/反爬虫关键词（遍历 cause chain）
      */
     protected boolean isAntiCrawlerMessage(Throwable e) {
-        if (e == null) return false;
-        String msg = e.getMessage();
-        if (msg == null) return false;
-        for (String keyword : ANTI_CRAWLER_MSG_KEYWORDS) {
-            if (msg.contains(keyword)) {
-                return true;
+        Throwable current = e;
+        while (current != null) {
+            String msg = current.getMessage();
+            if (msg != null) {
+                for (String keyword : ANTI_CRAWLER_MSG_KEYWORDS) {
+                    if (msg.contains(keyword)) {
+                        return true;
+                    }
+                }
             }
+            current = current.getCause();
         }
         return false;
     }

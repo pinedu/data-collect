@@ -15,6 +15,9 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 第三方数据采集API客户端
@@ -23,6 +26,16 @@ import java.util.*;
 @Slf4j
 @Component
 public class ThirdPartyApiClient {
+
+    /** 考勤接口按项目ID隔离的锁，同一项目同时只能有一个请求在执行 */
+    private static final ConcurrentHashMap<String, ReentrantLock> ATTENDANCE_LOCKS = new ConcurrentHashMap<>();
+
+    /**
+     * 获取或创建指定项目ID的考勤锁
+     */
+    private static ReentrantLock getAttendanceLock(String projectId) {
+        return ATTENDANCE_LOCKS.computeIfAbsent(projectId, k -> new ReentrantLock());
+    }
 
     @Resource
    private TokenManager tokenManager;
@@ -155,31 +168,39 @@ public class ThirdPartyApiClient {
     public JSONObject getAttendancePage(String projectId, int pageNum, int pageSize,
                                          String beginTime, String endTime,
                                          String account, String password) {
-        String timestamp = System.currentTimeMillis() + "";
-        Map<String, Object> bodyMap = new HashMap<>(3);
-        bodyMap.put("appkey", appKey);
-        bodyMap.put("timestamp", timestamp);
-        bodyMap.put("pageNum", pageNum);
-        bodyMap.put("pageSize", pageSize);
-        bodyMap.put("projectId", projectId);
-        bodyMap.put("begin", beginTime);
-        bodyMap.put("end", endTime);
-        bodyMap.put("personName", "");
-        bodyMap.put("invalid", 0);
-        String signStr = getSignStr(bodyMap);
-        String referer = "https://collect.gzldyg.com/attend/index";
-        Map<String, String> headMap = getHeadMap(signStr, referer, timestamp, account, password);
-        headMap.put("Accept", "application/json, text/plain, */*");
-        headMap.put("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
-        headMap.put("Cache-Control", "no-cache");
+        ReentrantLock lock = getAttendanceLock(projectId);
+        lock.lock();
+        try {
+            String timestamp = System.currentTimeMillis() + "";
+            Map<String, Object> bodyMap = new HashMap<>(3);
+            bodyMap.put("appkey", appKey);
+            bodyMap.put("timestamp", timestamp);
+            bodyMap.put("pageNum", pageNum);
+            bodyMap.put("pageSize", pageSize);
+            bodyMap.put("projectId", projectId);
+            bodyMap.put("begin", beginTime);
+            bodyMap.put("end", endTime);
+            bodyMap.put("personName", "");
+            bodyMap.put("invalid", 0);
+            String signStr = getSignStr(bodyMap);
+            String referer = "https://collect.gzldyg.com/attend/index";
+            Map<String, String> headMap = getHeadMap(signStr, referer, timestamp, account, password);
+            headMap.put("Accept", "application/json, text/plain, */*");
+            headMap.put("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
+            headMap.put("Cache-Control", "no-cache");
 
-        String body = HttpRequest.post(attendanceUrl)
-                .addHeaders(headMap)
-                .body(JSONUtil.toJsonStr(bodyMap))
-                .timeout(30000)
-                .execute().body();
+            String body = HttpRequest.post(attendanceUrl)
+                    .addHeaders(headMap)
+                    .body(JSONUtil.toJsonStr(bodyMap))
+                    .timeout(30000)
+                    .execute().body();
 
-        return parseResponse(body, "考勤列表");
+            return parseResponse(body, "考勤列表");
+        } catch (Exception e) {
+            throw new RuntimeException("考勤接口请求异常", e);
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**

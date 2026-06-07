@@ -54,7 +54,6 @@ public class DataChangePublisher {
         String routingKey = "data.change." + dataType.toLowerCase();
         try {
             rabbitTemplate.convertAndSend(EXCHANGE_NAME, routingKey, event);
-            log.debug("发布数据变更事件: {} {} {}", dataType, action, dataId);
         } catch (Exception e) {
             log.error("发布数据变更事件失败: {} {} {} - {}", dataType, action, dataId, e.getMessage());
         }

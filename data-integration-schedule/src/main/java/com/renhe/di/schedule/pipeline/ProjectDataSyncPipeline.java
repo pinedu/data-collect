@@ -123,55 +123,10 @@ public class ProjectDataSyncPipeline {
                     log.warn("项目【{}】人员同步失败，继续执行后续步骤", projectName);
                 }
 
-                // 风控多轮恢复：指数退避(60s→120s→240s→300s) + 同类型探针 + 最多10分钟
+                // 人员风控多轮恢复
                 if (personResult != null && personResult.isAntiCrawlerTriggered()) {
-                    long antiCrawlerStart = System.currentTimeMillis();
-                    String account = project.getAccount();
-                    long[] cooldownSequence = {300_000, 600_000, 900_000, 1_200_000}; // 5min→10min→15min→20min
-                    long maxTotalRecoveryMs = 60 * 60 * 1000; // 最多等1小时
-                    boolean recovered = false;
-                    long totalWaited = 0;
-
-                    for (int round = 0; round < cooldownSequence.length; round++) {
-                        if (totalWaited >= maxTotalRecoveryMs) break;
-
-                        long cooldownMs = Math.min(cooldownSequence[round], maxTotalRecoveryMs - totalWaited);
-                        log.warn("项目【{}】风控恢复第{}/{}轮，等待{}s（已累计等待{}s/{}s上限）",
-                                projectName, round + 1, cooldownSequence.length, cooldownMs / 1000,
-                                totalWaited / 1000, maxTotalRecoveryMs / 1000);
-                        try {
-                            TimeUnit.MILLISECONDS.sleep(cooldownMs);
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            return;
-                        }
-                        totalWaited += cooldownMs;
-
-                        // 同类型探针：人员风控用人员API探测
-                        try {
-                            apiClient.getPersonPage(projectNum, 1, 1, null, null, account, project.getPassword());
-                            recovered = true;
-                            long totalSec = (System.currentTimeMillis() - antiCrawlerStart) / 1000;
-                            log.info("项目【{}】风控已解除！第{}轮探针成功，总恢复耗时{}s",
-                                    projectName, round + 1, totalSec);
-                            rateLimitStrategy.resetAntiCrawlerState(account);
-                            break;
-                        } catch (Exception probeEx) {
-                            if (rateLimitStrategy.isAntiCrawlerMessage(probeEx.getMessage())) {
-                                log.error("项目【{}】第{}轮探针仍被拦截，继续下一轮", projectName, round + 1);
-                            } else {
-                                log.warn("项目【{}】第{}轮探针失败（非风控）: {}，尝试继续",
-                                        projectName, round + 1, probeEx.getMessage());
-                                recovered = true;
-                                break;
-                            }
-                        }
-                    }
-
+                    boolean recovered = recoverFromAntiCrawler(project, projectName, projectNum, "PERSON");
                     if (!recovered) {
-                        long totalSec = (System.currentTimeMillis() - antiCrawlerStart) / 1000;
-                        log.error("项目【{}】风控恢复失败，已等待{}s超过{}s上限，跳过工资/考勤",
-                                projectName, totalSec, maxTotalRecoveryMs / 1000);
                         long projectDuration = (System.currentTimeMillis() - projectStart) / 1000;
                         log.info("--- 项目【{}】同步完成（风控中断），总耗时：{}s ---\n", projectName, projectDuration);
                         return;
@@ -190,13 +145,34 @@ public class ProjectDataSyncPipeline {
                     }
                 }
 
-                // Step 4 & 5: 工资和考勤串行同步
+                // Step 4: 工资同步
                 long payrollStartTime = System.currentTimeMillis();
                 log.info("[时序] 项目【{}】工资启动 @ {}", projectName,
                         java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss")));
                 SyncResult payrollResult = executeStep("工资信息", () -> payrollSyncJob.syncSingleProject(project));
                 long payrollDuration = (System.currentTimeMillis() - payrollStartTime) / 1000;
                 log.info("[时序] 项目【{}】工资完成（耗时{}s）", projectName, payrollDuration);
+
+                // 工资风控多轮恢复
+                if (payrollResult != null && payrollResult.isAntiCrawlerTriggered()) {
+                    boolean recovered = recoverFromAntiCrawler(project, projectName, projectNum, "PAYROLL");
+                    if (!recovered) {
+                        long projectDuration = (System.currentTimeMillis() - projectStart) / 1000;
+                        log.info("--- 项目【{}】同步完成（工资风控中断），总耗时：{}s ---\n", projectName, projectDuration);
+                        return;
+                    }
+
+                    log.info("项目【{}】风控已解除，重试工资同步（渐进式断点续传）", projectName);
+                    SyncResult retryPayrollResult = executeStep("工资信息(续传)",
+                            () -> payrollSyncJob.syncSingleProject(project));
+                    if (retryPayrollResult != null) {
+                        int mergedTotal = payrollResult.getTotalCount() + retryPayrollResult.getTotalCount();
+                        int mergedSuccess = payrollResult.getSuccessCount() + retryPayrollResult.getSuccessCount();
+                        int mergedFail = payrollResult.getFailCount() + retryPayrollResult.getFailCount();
+                        log.info("项目【{}】工资续传完成，本轮合计：总计{}条，成功{}条，失败{}条",
+                                projectName, mergedTotal, mergedSuccess, mergedFail);
+                    }
+                }
 
                 // 间隔2秒再启动考勤
                 try {
@@ -205,12 +181,34 @@ public class ProjectDataSyncPipeline {
                     Thread.currentThread().interrupt();
                 }
 
+                // Step 5: 考勤同步
                 long attendanceStartTime = System.currentTimeMillis();
                 log.info("[时序] 项目【{}】考勤启动 @ {}", projectName,
                         java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss")));
                 SyncResult attendanceResult = executeStep("考勤信息", () -> attendanceFullSyncJob.syncSingleProject(project));
                 long attendanceDuration = (System.currentTimeMillis() - attendanceStartTime) / 1000;
                 log.info("[时序] 项目【{}】考勤完成（耗时{}s）", projectName, attendanceDuration);
+
+                // 考勤风控多轮恢复
+                if (attendanceResult != null && attendanceResult.isAntiCrawlerTriggered()) {
+                    boolean recovered = recoverFromAntiCrawler(project, projectName, projectNum, "ATTENDANCE");
+                    if (!recovered) {
+                        long projectDuration = (System.currentTimeMillis() - projectStart) / 1000;
+                        log.info("--- 项目【{}】同步完成（考勤风控中断），总耗时：{}s ---\n", projectName, projectDuration);
+                        return;
+                    }
+
+                    log.info("项目【{}】风控已解除，重试考勤同步（渐进式断点续传）", projectName);
+                    SyncResult retryAttendanceResult = executeStep("考勤信息(续传)",
+                            () -> attendanceFullSyncJob.syncSingleProject(project));
+                    if (retryAttendanceResult != null) {
+                        int mergedTotal = attendanceResult.getTotalCount() + retryAttendanceResult.getTotalCount();
+                        int mergedSuccess = attendanceResult.getSuccessCount() + retryAttendanceResult.getSuccessCount();
+                        int mergedFail = attendanceResult.getFailCount() + retryAttendanceResult.getFailCount();
+                        log.info("项目【{}】考勤续传完成，本轮合计：总计{}条，成功{}条，失败{}条",
+                                projectName, mergedTotal, mergedSuccess, mergedFail);
+                    }
+                }
 
                 if (payrollResult == null) {
                     log.warn("项目【{}】工资同步失败", projectName);
@@ -270,5 +268,87 @@ public class ProjectDataSyncPipeline {
     @FunctionalInterface
     public interface SyncStepFunction {
         SyncResult execute() throws Exception;
+    }
+
+    /**
+     * 风控多轮恢复：线性退避(5min→10min→15min→20min) + 同类型探针 + 最多1小时
+     *
+     * @param project     项目配置
+     * @param projectName 项目名称（用于日志）
+     * @param projectNum  项目编号
+     * @param dataType    数据类型（PERSON/PAYROLL/ATTENDANCE），决定探针API类型
+     * @return true=恢复成功，false=恢复失败
+     */
+    private boolean recoverFromAntiCrawler(DiProjectConfig project, String projectName,
+                                            String projectNum, String dataType) {
+        long antiCrawlerStart = System.currentTimeMillis();
+        String account = project.getAccount();
+        long[] cooldownSequence = {300_000, 600_000, 900_000, 1_200_000}; // 5min→10min→15min→20min
+        long maxTotalRecoveryMs = 60 * 60 * 1000; // 最多等1小时
+        boolean recovered = false;
+        long totalWaited = 0;
+
+        for (int round = 0; round < cooldownSequence.length; round++) {
+            if (totalWaited >= maxTotalRecoveryMs) break;
+
+            long cooldownMs = Math.min(cooldownSequence[round], maxTotalRecoveryMs - totalWaited);
+            log.warn("项目【{}】[{}]风控恢复第{}/{}轮，等待{}s（已累计等待{}s/{}s上限）",
+                    projectName, dataType, round + 1, cooldownSequence.length, cooldownMs / 1000,
+                    totalWaited / 1000, maxTotalRecoveryMs / 1000);
+            try {
+                TimeUnit.MILLISECONDS.sleep(cooldownMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+            totalWaited += cooldownMs;
+
+            // 同类型探针：用对应数据类型的API探测
+            try {
+                sendProbe(projectNum, account, project.getPassword(), dataType);
+                recovered = true;
+                long totalSec = (System.currentTimeMillis() - antiCrawlerStart) / 1000;
+                log.info("项目【{}】[{}]风控已解除！第{}轮探针成功，总恢复耗时{}s",
+                        projectName, dataType, round + 1, totalSec);
+                rateLimitStrategy.resetAntiCrawlerState(account);
+                break;
+            } catch (Exception probeEx) {
+                if (rateLimitStrategy.isAntiCrawlerMessage(probeEx.getMessage())) {
+                    log.error("项目【{}】[{}]第{}轮探针仍被拦截，继续下一轮",
+                            projectName, dataType, round + 1);
+                } else {
+                    log.warn("项目【{}】[{}]第{}轮探针失败（非风控）: {}，尝试继续",
+                            projectName, dataType, round + 1, probeEx.getMessage());
+                    recovered = true;
+                    break;
+                }
+            }
+        }
+
+        if (!recovered) {
+            long totalSec = (System.currentTimeMillis() - antiCrawlerStart) / 1000;
+            log.error("项目【{}】[{}]风控恢复失败，已等待{}s超过{}s上限",
+                    projectName, dataType, totalSec, maxTotalRecoveryMs / 1000);
+        }
+        return recovered;
+    }
+
+    /**
+     * 发送同类型探针请求，根据数据类型调用对应的API
+     */
+    private void sendProbe(String projectNum, String account, String password, String dataType) throws Exception {
+        switch (dataType) {
+            case "PERSON":
+                apiClient.getPersonPage(projectNum, 1, 1, null, null, account, password);
+                break;
+            case "PAYROLL":
+                apiClient.getPayrollPage(projectNum, 1, 1, "", account, password);
+                break;
+            case "ATTENDANCE":
+                apiClient.getAttendancePage(projectNum, 1, 1, "", "", account, password);
+                break;
+            default:
+                throw new IllegalArgumentException("未知数据类型: " + dataType);
+        }
     }
 }

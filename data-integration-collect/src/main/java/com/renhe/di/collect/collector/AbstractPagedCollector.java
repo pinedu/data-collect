@@ -63,11 +63,6 @@ public abstract class AbstractPagedCollector<T> implements PagedDataCollector<T>
 
         try {
             while (true) {
-                // 分页间限流延迟（含动态退避）
-                if (pageNum > 1) {
-                    rateLimitStrategy.applyDelay(getDataType(), ctx.getSourceProjectNum(), pageNum, account);
-                }
-
                 PageResult<T> pageResult;
                 final int currentPage = pageNum;
                 try {
@@ -389,7 +384,8 @@ public abstract class AbstractPagedCollector<T> implements PagedDataCollector<T>
      * 比 instanceof AntiCrawlerException 更可靠，因为异常可能被 CompletableFuture 等框架包装
      */
     private static final String[] ANTI_CRAWLER_KEYWORDS = {
-            "触发风控", "触发反爬虫", "风控", "反爬虫"
+            "触发风控", "触发反爬虫", "风控", "反爬虫",
+            "系统异常", "请联系管理员"
     };
 
     private boolean isAntiCrawlerException(Throwable e) {

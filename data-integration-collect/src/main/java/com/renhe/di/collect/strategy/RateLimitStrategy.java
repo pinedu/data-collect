@@ -201,6 +201,9 @@ public class RateLimitStrategy {
      */
     public <T> T executeWithRetry(Supplier<T> supplier, String dataType, String projectNum,
                                    int pageNum, String account) {
+        // 请求前随机延迟（拟人化，统一入口，避免触发第三方API限流）
+        applyDelay(dataType, projectNum, pageNum, account);
+
         int retryCount = 0;
         Exception lastException = null;
 
