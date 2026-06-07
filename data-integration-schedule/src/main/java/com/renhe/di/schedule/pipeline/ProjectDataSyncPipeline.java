@@ -190,15 +190,15 @@ public class ProjectDataSyncPipeline {
                     }
                 }
 
-                // Step 4 & 5: 工资和考勤错峰同步（避免同时打到第三方网关触发限流）
-                // 先启动工资，等待2秒错峰后再启动考勤，保留并行执行减少总耗时
+                // Step 4 & 5: 工资和考勤串行同步
                 long payrollStartTime = System.currentTimeMillis();
-                log.info("[错峰时序] 项目【{}】工资启动 @ {}", projectName,
+                log.info("[时序] 项目【{}】工资启动 @ {}", projectName,
                         java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss")));
-                CompletableFuture<SyncResult> payrollFuture = CompletableFuture.supplyAsync(() ->
-                        executeStep("工资信息", () -> payrollSyncJob.syncSingleProject(project)), syncTaskExecutor);
+                SyncResult payrollResult = executeStep("工资信息", () -> payrollSyncJob.syncSingleProject(project));
+                long payrollDuration = (System.currentTimeMillis() - payrollStartTime) / 1000;
+                log.info("[时序] 项目【{}】工资完成（耗时{}s）", projectName, payrollDuration);
 
-                // 错峰延迟：避免考勤和工资的首次 API 请求在同一毫秒窗口内
+                // 间隔2秒再启动考勤
                 try {
                     TimeUnit.SECONDS.sleep(2);
                 } catch (InterruptedException e) {
@@ -206,37 +206,21 @@ public class ProjectDataSyncPipeline {
                 }
 
                 long attendanceStartTime = System.currentTimeMillis();
-                log.info("[错峰时序] 项目【{}】考勤启动 @ {}（距工资启动 +{}ms）", projectName,
-                        java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss")),
-                        attendanceStartTime - payrollStartTime);
-                CompletableFuture<SyncResult> attendanceFuture = CompletableFuture.supplyAsync(() ->
-                        executeStep("考勤信息", () -> attendanceFullSyncJob.syncSingleProject(project)), syncTaskExecutor);
+                log.info("[时序] 项目【{}】考勤启动 @ {}", projectName,
+                        java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss")));
+                SyncResult attendanceResult = executeStep("考勤信息", () -> attendanceFullSyncJob.syncSingleProject(project));
+                long attendanceDuration = (System.currentTimeMillis() - attendanceStartTime) / 1000;
+                log.info("[时序] 项目【{}】考勤完成（耗时{}s）", projectName, attendanceDuration);
 
-                try {
-                    CompletableFuture.allOf(payrollFuture, attendanceFuture).join();
-                    SyncResult payrollResult = payrollFuture.get();
-                    SyncResult attendanceResult = attendanceFuture.get();
-
-                    long payrollDuration = System.currentTimeMillis() - payrollStartTime;
-                    long attendanceDuration = System.currentTimeMillis() - attendanceStartTime;
-                    log.info("[错峰时序] 项目【{}】工资完成（耗时{}s）考勤完成（耗时{}s）",
-                            projectName, payrollDuration / 1000, attendanceDuration / 1000);
-
-                    if (payrollResult == null) {
-                        log.warn("项目【{}】工资同步失败", projectName);
-                    }
-                    if (attendanceResult == null) {
-                        log.warn("项目【{}】考勤同步失败", projectName);
-                    }
-                } catch (Exception e) {
-                    log.error("项目【{}】工资/考勤并行同步异常: {}", projectName, e.getMessage());
+                if (payrollResult == null) {
+                    log.warn("项目【{}】工资同步失败", projectName);
+                }
+                if (attendanceResult == null) {
+                    log.warn("项目【{}】考勤同步失败", projectName);
                 }
 
                 long projectDuration = (System.currentTimeMillis() - projectStart) / 1000;
                 log.info("--- 项目【{}】同步完成，总耗时：{}秒 ---\n", projectName, projectDuration);
-                log.info("[错峰汇总] 项目【{}】人员→工资→考勤执行时序: " +
-                        "工资先于考勤{}ms启动，松耦合并行减少叠加窗口，日志可分析限流重叠",
-                        projectName, attendanceStartTime - payrollStartTime);
             }, syncTaskExecutor);
             futures.add(future);
         }

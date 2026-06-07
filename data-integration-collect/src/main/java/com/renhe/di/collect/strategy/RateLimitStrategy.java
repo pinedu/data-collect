@@ -12,11 +12,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 /**
- * 反爬虫/限流策略 — 工业级分级限流 + 指数退避风控冷却
+ * 反爬虫/限流策略 — 工业级分级限流 + 线性退避风控冷却
  * <p>
  * 核心机制：
  * 1. 按数据类型分级限流：PERSON 低频/PAYROLL 中频/ATTENDANCE 高频
- * 2. 风控触发后指数退避冷却（30s→60s→120s→240s→480s），冷却后自动探测恢复
+ * 2. 风控触发后线性退避冷却（5min→10min→15min→…→30min封顶），冷却后自动探测恢复
  * 3. 单账号并发控制（Semaphore）：同一账号按数据类型控制并发数
  * 4. 动态退避：成功时逐步缩减延迟，失败时指数增长延迟
  * 5. 风控跟踪：记录触发时间、冷却时长，供上层日志分析
@@ -41,13 +41,13 @@ public class RateLimitStrategy {
 
     // ==================== 分级限流参数（按数据类型） ====================
     /** 并发采集：并发请求数 */
-    private static final int CONCURRENCY_PERSON = 2;
+    private static final int CONCURRENCY_PERSON = 1;
     private static final int CONCURRENCY_PAYROLL = 5;
     private static final int CONCURRENCY_ATTENDANCE = 15;
     private static final int CONCURRENCY_DEFAULT = 15;
 
     /** 并发采集：批次大小（每批页数，与并发数对齐避免线程排队超时） */
-    private static final int BATCH_PERSON = 10;
+    private static final int BATCH_PERSON = 1;
     private static final int BATCH_PAYROLL = 5;
     private static final int BATCH_ATTENDANCE = 15;
     private static final int BATCH_DEFAULT = 100;
@@ -65,17 +65,15 @@ public class RateLimitStrategy {
     private static final int INTER_BATCH_MAX_DEFAULT = 4_000;
 
     /** 并发请求前最小抖动（毫秒） */
-    private static final int JITTER_MIN_MS = 100;
+    private static final int JITTER_MIN_MS = 2000;
     /** 并发请求前最大抖动（毫秒） */
-    private static final int JITTER_MAX_MS = 500;
+    private static final int JITTER_MAX_MS = 5000;
 
     // ==================== 风控冷却退避参数 ====================
-    /** 风控冷却基数（毫秒）— 适配分钟级封禁（典型5-15分钟） */
-    private static final long ANTI_CRAWLER_BASE_COOLDOWN_MS = 60_000;
-    /** 风控冷却最大上限（毫秒）= 5分钟 */
-    private static final long ANTI_CRAWLER_MAX_COOLDOWN_MS = 300_000;
-    /** 风控冷却退避指数因子 */
-    private static final double ANTI_CRAWLER_BACKOFF_MULTIPLIER = 2.0;
+    /** 风控冷却基数（毫秒）— 每次触发递增5分钟 */
+    private static final long ANTI_CRAWLER_BASE_COOLDOWN_MS = 300_000;
+    /** 风控冷却最大上限（毫秒）= 30分钟 */
+    private static final long ANTI_CRAWLER_MAX_COOLDOWN_MS = 1_800_000;
 
     // ==================== 状态存储 ====================
     /** 账号级并发信号量 */
@@ -318,9 +316,8 @@ public class RateLimitStrategy {
         int count = antiCrawlerTriggerCount
                 .computeIfAbsent(account, k -> new AtomicInteger(0))
                 .incrementAndGet();
-        // 指数退避: base * multiplier^(count-1)，上限 MAX_COOLDOWN
-        long cooldown = (long)(ANTI_CRAWLER_BASE_COOLDOWN_MS
-                * Math.pow(ANTI_CRAWLER_BACKOFF_MULTIPLIER, count - 1));
+        // 线性退避: base * count，上限 MAX_COOLDOWN（5min→10min→15min→...→30min封顶）
+        long cooldown = ANTI_CRAWLER_BASE_COOLDOWN_MS * count;
         cooldown = Math.min(cooldown, ANTI_CRAWLER_MAX_COOLDOWN_MS);
         log.warn("账号[{}]第{}次触发风控，冷却{}ms（" + (cooldown / 1000) + "s）",
                 account, count, cooldown);
@@ -364,8 +361,7 @@ public class RateLimitStrategy {
     public long getAntiCrawlerCooldownMs(String account) {
         int count = antiCrawlerTriggerCount
                 .computeIfAbsent(account, k -> new AtomicInteger(1)).get();
-        long cooldown = (long)(ANTI_CRAWLER_BASE_COOLDOWN_MS
-                * Math.pow(ANTI_CRAWLER_BACKOFF_MULTIPLIER, count - 1));
+        long cooldown = ANTI_CRAWLER_BASE_COOLDOWN_MS * count;
         return Math.min(cooldown, ANTI_CRAWLER_MAX_COOLDOWN_MS);
     }
 

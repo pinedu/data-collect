@@ -49,4 +49,13 @@ public interface SyncSnapshotService extends IService<DiSyncSnapshot> {
      */
     void saveMonthSnapshot(String sourceProjectNum, String dataType, String monthId,
                            java.time.LocalDateTime monthSyncDate, int monthThirdPartyTotal);
+
+    /**
+     * 查询指定项目+数据类型的最新全局快照（monthId 为 null）
+     *
+     * @param sourceProjectNum 项目编号
+     * @param dataType         数据类型
+     * @return 最新全局快照，不存在时返回 null
+     */
+    DiSyncSnapshot getLatestSnapshot(String sourceProjectNum, String dataType);
 }

@@ -42,7 +42,7 @@ public class PersonCollector extends AbstractPagedCollector<JSONObject> {
         }
 
         int callSeq = API_CALL_COUNTER.incrementAndGet();
-        log.info("[PERSON API #{:03d}] page={}, pageSize={}, project={}, beginDate={}, endDate={}",
+        log.info("[PERSON API #{}] page={}, pageSize={}, project={}, beginDate={}, endDate={}",
                 callSeq, pageNum, pageSize, ctx.getSourceProjectNum(), beginDate, endDate);
 
         JSONObject data = apiClient.getPersonPage(ctx.getSourceProjectNum(), pageNum, pageSize,
@@ -50,16 +50,26 @@ public class PersonCollector extends AbstractPagedCollector<JSONObject> {
         );
 
         if (data == null) {
-            log.info("[PERSON API #{:03d}] 返回 null（空响应）", callSeq);
+            log.info("[PERSON API #{}] 返回 null（空响应），total=N/A", callSeq);
             return PageResult.empty();
         }
 
         JSONArray list = data.getJSONArray("list");
         int returnedRows = (list != null) ? list.size() : 0;
-        log.info("[PERSON API #{:03d}] 返回 {} 条", callSeq, returnedRows);
-
         Integer total = data.getInt("total");
         Integer respPageSize = data.getInt("pageSize");
+
+        // 响应日志：total + 返回条数 + 日期范围（用于快速诊断 API 过滤是否生效）
+        if (list != null && !list.isEmpty()) {
+            String firstDate = list.getJSONObject(0).getStr("beginDate", "?");
+            String lastDate = list.getJSONObject(list.size() - 1).getStr("beginDate", "?");
+            log.info("[PERSON API #{}] total={}, returned={}, page={}, pageSize={}, dates=[{} ~ {}]",
+                    callSeq, total, returnedRows, pageNum, respPageSize != null ? respPageSize : pageSize,
+                    firstDate, lastDate);
+        } else {
+            log.info("[PERSON API #{}] total={}, returned={}, page={}, pageSize={}",
+                    callSeq, total, returnedRows, pageNum, respPageSize != null ? respPageSize : pageSize);
+        }
 
         List<JSONObject> resultList = new ArrayList<>();
         if (list != null) {

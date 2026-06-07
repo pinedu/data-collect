@@ -15,12 +15,13 @@ import java.util.List;
 public interface DiSyncSnapshotMapper extends BaseMapper<DiSyncSnapshot> {
 
     /**
-     * 查询指定项目每个数据类型的最新快照
+     * 查询指定项目每个数据类型的最新全局快照（仅返回 month_id IS NULL 的记录）
      */
     @Select("SELECT s.* FROM di_sync_snapshot s " +
             "INNER JOIN (SELECT source_project_num, data_type, MAX(sync_time) AS max_time " +
             "            FROM di_sync_snapshot " +
             "            WHERE source_project_num = #{sourceProjectNum} AND deleted = 0 " +
+            "              AND month_id IS NULL " +
             "            GROUP BY source_project_num, data_type) t " +
             "ON s.source_project_num = t.source_project_num " +
             "AND s.data_type = t.data_type " +

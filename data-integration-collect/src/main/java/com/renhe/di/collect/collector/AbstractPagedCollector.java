@@ -27,6 +27,11 @@ public abstract class AbstractPagedCollector<T> implements PagedDataCollector<T>
     @Autowired
     private RateLimitStrategy rateLimitStrategy;
 
+    /** 连续跳过页面达到此阈值时，触发跳跃式前进（跳过无关数据区域） */
+    private static final int CONSECUTIVE_SKIP_JUMP_THRESHOLD = 3;
+    /** 跳跃步长（每次跳跃前进的页数） */
+    private static final int JUMP_STRIDE = 5;
+
     /**
      * 获取分页大小（子类可覆盖）
      *
@@ -137,15 +142,24 @@ public abstract class AbstractPagedCollector<T> implements PagedDataCollector<T>
         int batchSize = rateLimitStrategy.getBatchSize(dataType);
 
         // ===== Phase 1: 探针请求第1页，获取 total =====
+        // 支持调用方预加载探针数据（避免 Phase A 探针与本方法内部探针重复请求）
         PageResult<T> probeResult;
-        try {
-            probeResult = rateLimitStrategy.executeWithRetry(
-                    () -> collectPage(ctx, 1, pageSize),
-                    dataType, projectNum, 1, account
-            );
-        } catch (Exception e) {
-            log.error("[{}] 项目【{}】探针请求第1页失败: {}", dataType, projectNum, e.getMessage());
-            return Collections.emptyList();
+        @SuppressWarnings("unchecked")
+        PageResult<T> preloaded = (PageResult<T>) ctx.getExtraParam("_preloadedFirstPage");
+        if (preloaded != null) {
+            probeResult = preloaded;
+            log.info("[{}] 项目【{}】使用预加载探针数据（跳过重复请求第1页）",
+                    dataType, projectNum);
+        } else {
+            try {
+                probeResult = rateLimitStrategy.executeWithRetry(
+                        () -> collectPage(ctx, 1, pageSize),
+                        dataType, projectNum, 1, account
+                );
+            } catch (Exception e) {
+                log.error("[{}] 项目【{}】探针请求第1页失败: {}", dataType, projectNum, e.getMessage());
+                return Collections.emptyList();
+            }
         }
 
             if (probeResult == null || probeResult.getList() == null || probeResult.getList().isEmpty()) {
@@ -183,6 +197,10 @@ public abstract class AbstractPagedCollector<T> implements PagedDataCollector<T>
                 log.info("[{}] 项目【{}】探针页数据尚未到达目标时间范围，跳过，继续取后续页",
                         dataType, projectNum);
             }
+            int consecutiveSkips = 0;
+            int totalSkippedPages = probeSkipped ? 1 : 0;
+            int jumpCount = 0;
+            int lastSkippedPage = probeSkipped ? 1 : 0;
             AtomicInteger completedPages = new AtomicInteger(1); // 第1页已采集
             AtomicInteger batchCount = new AtomicInteger(0);
             AtomicBoolean reachedEnd = new AtomicBoolean(false); // 动态终点标记
@@ -277,10 +295,28 @@ public abstract class AbstractPagedCollector<T> implements PagedDataCollector<T>
 
                             // 内容级跳过：子类可决定该页数据是否尚未到达目标范围（如：页全在月末之后）
                             if (shouldSkipPage(pageList, ctx)) {
-                                log.debug("[{}] 项目【{}】跳过该页数据（尚未到达目标时间范围）",
-                                        dataType, projectNum);
+                                consecutiveSkips++;
+                                totalSkippedPages++;
+                                lastSkippedPage = startPage;
+                                log.info("[{}] 项目【{}】跳过该页数据（尚未到达目标时间范围，连续跳过{}页）",
+                                        dataType, projectNum, consecutiveSkips);
+                                // 连续跳过达到阈值 → 跳跃前进，快速越过无关数据区域
+                                if (consecutiveSkips >= CONSECUTIVE_SKIP_JUMP_THRESHOLD) {
+                                    int jumpTarget = startPage + JUMP_STRIDE;
+                                    log.info("[{}] 项目【{}】连续跳过{}页，跳跃前进到第{}页（回溯填充第{}-{}页）",
+                                            dataType, projectNum, consecutiveSkips, jumpTarget,
+                                            lastSkippedPage + 1, jumpTarget - 1);
+                                    startPage = jumpTarget;
+                                    jumpCount++;
+                                    // 回溯：下一批次从最后跳过页的下一页开始顺序填充，确保不遗漏目标数据
+                                    if (lastSkippedPage > 0) {
+                                        startPage = lastSkippedPage + 1;
+                                    }
+                                    consecutiveSkips = 0;
+                                }
                                 continue;
                             }
+                            consecutiveSkips = 0; // 非跳过页，重置连续跳过计数
 
                             allData.addAll(pageList);
                             // 动态终点：某页返回 < pageSize 条 → 最后一页
@@ -323,8 +359,8 @@ public abstract class AbstractPagedCollector<T> implements PagedDataCollector<T>
                 startPage = endPage + 1;
             }
 
-            log.info("[{}] 项目【{}】动态分批采集完成，共{}页，累计{}条数据",
-                    dataType, projectNum, completedPages.get(), allData.size());
+            log.info("[{}] 项目【{}】动态分批采集完成，共{}页，累计{}条数据（跳过{}页，跳跃{}次）",
+                    dataType, projectNum, completedPages.get(), allData.size(), totalSkippedPages, jumpCount);
             return new ArrayList<>(allData);
     }
 

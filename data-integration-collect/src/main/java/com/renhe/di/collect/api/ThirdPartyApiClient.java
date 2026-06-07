@@ -9,6 +9,7 @@ import com.renhe.di.collect.model.CollectContext;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -25,6 +26,9 @@ public class ThirdPartyApiClient {
 
     @Resource
    private TokenManager tokenManager;
+
+    @Autowired
+    private BrowserFingerprint browserFingerprint;
 
     @Value("${collect.api.host:http://172.19.4.252:18001}")
     private String apiHost;
@@ -345,7 +349,8 @@ public class ThirdPartyApiClient {
 
     public Map<String, String> getHeadMap(String signStr, String referer, String timestamp,
                                            String account, String password) {
-        Map<String, String> headMap = new HashMap<>(3);
+        Map<String, String> headMap = new HashMap<>();
+        // 业务认证头（不可变）
         String token = tokenManager.getToken(account, password);
         if (StringUtils.hasLength(token)) {
             headMap.put("Logininfo", token);
@@ -355,14 +360,11 @@ public class ThirdPartyApiClient {
         headMap.put("Timestamp", timestamp);
         headMap.put("Referer", referer);
         headMap.put("Origin", "https://ldyg.guizhou.gov.cn");
-        headMap.put("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
         headMap.put("Content-Type", "application/json");
-        // 添加更多请求头，模拟真实浏览器
         headMap.put("Accept", "application/json, text/plain, */*");
-        headMap.put("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
-        headMap.put("Accept-Encoding", "gzip, deflate, br");
-        headMap.put("Connection", "keep-alive");
         headMap.put("Cache-Control", "no-cache");
+        // 浏览器指纹头（随机化，按账号缓存，包含 User-Agent / Sec-Ch-* / Sec-Fetch-* 等）
+        headMap.putAll(browserFingerprint.getHeaders(account));
         return headMap;
     }
 
