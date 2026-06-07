@@ -270,10 +270,10 @@ public class AttendanceFullSyncJob extends AbstractSyncJob {
         long monthStartMs = System.currentTimeMillis();
 
         // --- 1. 月份快照检查 ---
-        Integer cachedTotal = checkMonthSnapshot(projectNum, monthId, monthStart, monthEnd);
-        if (cachedTotal != null && cachedTotal >= 0) {
-            log.info("项目【{}】月份【{}】[{}/{}] 快照匹配跳过，本地 >= 第三方({})",
-                    projectNum, monthId, index, totalMonths, cachedTotal);
+        Integer snapStatus = checkMonthSnapshot(projectNum, monthId, monthStart, monthEnd);
+        if (snapStatus != null && snapStatus == -1) {
+            log.info("项目【{}】月份【{}】[{}/{}] 快照匹配跳过，本地 >= 第三方",
+                    projectNum, monthId, index, totalMonths);
 
             return MonthResult.skipped(monthId);
         }
