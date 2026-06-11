@@ -27,7 +27,7 @@ public class RateLimitStrategy {
 
     // ==================== 基础限流参数 ====================
     /** 最小分页延迟（毫秒） */
-    private static final int MIN_DELAY_MS = 1000;
+    private static final int MIN_DELAY_MS = 2000;
     /** 最大分页延迟（毫秒） */
     private static final int MAX_DELAY_MS = 3000;
     /** 最大重试次数 */
@@ -445,6 +445,23 @@ public class RateLimitStrategy {
             if (msg.contains(keyword)) {
                 return true;
             }
+        }
+        return false;
+    }
+
+    /**
+     * 遍历异常链判断是否为风控异常（包括 cause 链）
+     * <p>
+     * ThirdPartyApiClient 会将原始异常包装为 RuntimeException("接口请求异常", e)，
+     * 导致顶层消息丢失风控关键词，必须遍历 cause 链才能准确识别。
+     */
+    public boolean isAntiCrawlerException(Throwable e) {
+        Throwable current = e;
+        while (current != null) {
+            if (isAntiCrawlerMessage(current.getMessage())) {
+                return true;
+            }
+            current = current.getCause();
         }
         return false;
     }

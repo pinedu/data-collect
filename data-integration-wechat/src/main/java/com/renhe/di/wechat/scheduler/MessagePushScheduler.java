@@ -3,7 +3,6 @@ package com.renhe.di.wechat.scheduler;
 import com.renhe.di.wechat.service.MessageService;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -12,7 +11,6 @@ import org.springframework.stereotype.Component;
  */
 @Slf4j
 @Component
-@EnableScheduling
 public class MessagePushScheduler {
 
     @Resource

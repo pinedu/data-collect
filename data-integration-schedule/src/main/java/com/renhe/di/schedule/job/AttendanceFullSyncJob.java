@@ -161,7 +161,7 @@ public class AttendanceFullSyncJob extends AbstractSyncJob {
             int idx = i + 1;
             log.info("项目【{}】月份【{}】[{}/{}] 开始采集",
                     projectNum, month, idx, months.size());
-            SyncResult result = syncSingleMonth(projectNum, account, password, month, idx, months.size());
+            SyncResult result = syncSingleMonth(projectNum, account, password, month, idx, months.size(), thirdPartyTotal);
             monthResults.add(result);
             if (result.isAntiCrawlerTriggered()) {
                 log.warn("项目【{}】月份【{}】触发风控，终止后续月份采集", projectNum, month);
@@ -262,7 +262,7 @@ public class AttendanceFullSyncJob extends AbstractSyncJob {
      */
     private SyncResult syncSingleMonth(String projectNum, String account,
                                         String password, YearMonth month,
-                                        int index, int totalMonths) {
+                                        int index, int totalMonths, int globalTotal) {
         String monthId = month.toString();
         LocalDateTime monthStart = month.atDay(1).atStartOfDay();
         LocalDateTime monthEnd = month.atEndOfMonth().atTime(23, 59, 59);
@@ -288,17 +288,23 @@ public class AttendanceFullSyncJob extends AbstractSyncJob {
             return SyncResult.of(0, 0, 0, 0);
         }
 
-        // 已完成月份：探针总量未变 → 跳过（数据无变化，无需重采）
-        if (wasCompleted && monthThirdPartyTotal == check.snapshotThirdTotal) {
-            log.info("项目【{}】月份【{}】[{}/{}] 已完成且总量未变({})，跳过",
+        // 探针异常检测：月份总量不应超过全局总量（超过说明API忽略了时间过滤）
+        if (monthThirdPartyTotal > globalTotal && globalTotal > 0) {
+            log.warn("项目【{}】月份【{}】探针总量({})超过全局总量({})，API可能忽略了时间过滤",
+                    projectNum, monthId, monthThirdPartyTotal, globalTotal);
+        }
+
+        // 已完成月份：本地count与探针总量一致 → 跳过（数据无变化，无需重采）
+        if (wasCompleted && check.snapshotThirdTotal == monthThirdPartyTotal) {
+            log.info("项目【{}】月份【{}】[{}/{}] 已完成且本地count=探针总量({})，跳过",
                     projectNum, monthId, index, totalMonths, monthThirdPartyTotal);
             return SyncResult.of(0, 0, 0, 0);
         }
 
         // 已完成月份但数据量变化：从上次最后一页续传，获取增量数据
-        if (wasCompleted && monthThirdPartyTotal != check.snapshotThirdTotal) {
+        if (wasCompleted && check.snapshotThirdTotal != monthThirdPartyTotal) {
             startPage = Math.max(check.snapshotLastPage, 1);
-            log.info("项目【{}】月份【{}】[{}/{}] 已完成但总量变化({}→{})，从第{}页续传增量",
+            log.info("项目【{}】月份【{}】[{}/{}] 已完成但数据变化(本地{}→探针{})，从第{}页续传增量",
                     projectNum, monthId, index, totalMonths,
                     check.snapshotThirdTotal, monthThirdPartyTotal, startPage);
         }
@@ -319,20 +325,38 @@ public class AttendanceFullSyncJob extends AbstractSyncJob {
                 .build();
 
         int[] pageStats = {0, 0, 0, 0}; // total, success, fail, skip
+        int[] filterCount = {0}; // 月份外记录过滤数
+        int[] consecutiveFilteredPages = {0}; // 连续全过滤页数（熔断用）
         int[] lastProcessedPage = {startPage - 1};
         boolean[] callbackFailed = {false};
 
         attendanceCollector.collectStreaming(ctx, startPage, (pageData, pageNum, total) -> {
-            // 清洗本页数据
+            // 清洗本页数据（含月份边界过滤）
             CleanContext cleanCtx = CleanContext.builder()
                     .sourceProjectNum(projectNum)
                     .dataType("ATTENDANCE")
                     .build();
 
             List<DiAttendance> batch = new ArrayList<>();
+            int pageFilterCount = 0;
             for (JSONObject raw : pageData) {
                 pageStats[0]++;
                 try {
+                    // 记录级时间过滤：确保只入库本月数据，杜绝API忽略时间参数导致的越界入库
+                    String clockingTime = raw.getStr("clockingTime");
+                    if (clockingTime != null && !clockingTime.isEmpty()) {
+                        try {
+                            LocalDateTime ct = LocalDateTime.parse(clockingTime,
+                                    java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+                            if (ct.isBefore(monthStart) || ct.isAfter(monthEnd)) {
+                                pageFilterCount++;
+                                filterCount[0]++;
+                                continue; // 非本月数据，跳过不入库
+                            }
+                        } catch (Exception ignored) {
+                        }
+                    }
+
                     DiAttendance attendance = cleanPipeline.execute(raw, cleanCtx, "ATTENDANCE");
                     if (attendance != null) {
                         batch.add(attendance);
@@ -346,7 +370,22 @@ public class AttendanceFullSyncJob extends AbstractSyncJob {
                 }
             }
 
-            // 批量 upsert 本页清洗结果
+            // 连续全过滤熔断：连续多页全部为非本月数据 → API已忽略时间过滤，立即终止
+            if (pageData.size() > 0 && batch.isEmpty() && pageStats[3] == 0 && pageFilterCount > 0) {
+                consecutiveFilteredPages[0]++;
+            } else if (!batch.isEmpty()) {
+                consecutiveFilteredPages[0] = 0;
+            }
+            if (consecutiveFilteredPages[0] >= 3) {
+                log.error("项目【{}】月份【{}】第{}页连续{}页全部为非本月数据(已过滤{}条)，"
+                        + "API已忽略时间过滤，终止本月采集",
+                        projectNum, monthId, pageNum, consecutiveFilteredPages[0], filterCount[0]);
+                lastProcessedPage[0] = pageNum;
+                ctx.putExtraParam("_monthCircuitBreaker", true);
+                return false;
+            }
+
+            // 批量 upsert 本页清洗结果（仅本月数据）
             if (!batch.isEmpty()) {
                 try {
                     int batchSuccess = batchInsertService.batchInsertOrUpdate(
@@ -372,8 +411,10 @@ public class AttendanceFullSyncJob extends AbstractSyncJob {
             // 保存页码级检查点
             safeSavePageCheckpoint(projectNum, monthId, pageNum, monthTotalPages, monthThirdPartyTotal);
 
-            log.debug("项目【{}】月份【{}】第{}页入库完成，本页{}条/成功{}条",
-                    projectNum, monthId, pageNum, pageData.size(), batch.size());
+            if (pageFilterCount > 0) {
+                log.debug("项目【{}】月份【{}】第{}页过滤{}条非本月数据，入库{}条",
+                        projectNum, monthId, pageNum, pageFilterCount, batch.size());
+            }
             return true; // 继续下一页
         });
 
@@ -381,9 +422,9 @@ public class AttendanceFullSyncJob extends AbstractSyncJob {
         boolean antiCrawler = Boolean.TRUE.equals(ctx.getExtraParam("_antiCrawlerTriggered"));
         long durationSec = (System.currentTimeMillis() - monthStartMs) / 1000;
 
-        log.info("项目【{}】月份【{}】[{}/{}] 完成，总计{}条/成功{}条/失败{}条/跳过{}条，耗时{}s",
+        log.info("项目【{}】月份【{}】[{}/{}] 完成，总计{}条/成功{}条/失败{}条/跳过{}条/月份外过滤{}条，耗时{}s",
                 projectNum, monthId, index, totalMonths,
-                pageStats[0], pageStats[1], pageStats[2], pageStats[3], durationSec);
+                pageStats[0], pageStats[1], pageStats[2], pageStats[3], filterCount[0], durationSec);
 
         if (antiCrawler) {
             log.warn("项目【{}】月份【{}】[{}/{}] 采集触发风控，下次从第{}页续传",
@@ -392,6 +433,13 @@ public class AttendanceFullSyncJob extends AbstractSyncJob {
         }
 
         if (callbackFailed[0]) {
+            return SyncResult.of(pageStats[0], pageStats[1], pageStats[2], pageStats[3]);
+        }
+
+        // 熔断器触发：API已忽略时间过滤，不标记完成，下次重试该月
+        if (Boolean.TRUE.equals(ctx.getExtraParam("_monthCircuitBreaker"))) {
+            log.warn("项目【{}】月份【{}】API时间过滤失效触发熔断，本月不标记完成，下次重试",
+                    projectNum, monthId);
             return SyncResult.of(pageStats[0], pageStats[1], pageStats[2], pageStats[3]);
         }
 
@@ -443,8 +491,8 @@ public class AttendanceFullSyncJob extends AbstractSyncJob {
                     int snapLastPage = snap.getMonthTotalPages() != null ? snap.getMonthTotalPages() : 0;
                     log.info("项目【{}】月份【{}】已完成快照，本地({})，快照总量({})，快照末页({})",
                             projectNum, monthId, localCount, snapTotal, snapLastPage);
-                    // 不在此处跳过，交给探针验证第三方数据是否变化
-                    return MonthCheckResult.completed(snapTotal, snapLastPage);
+                    // 返回本地count，供外层与当前探针总量对比
+                    return MonthCheckResult.completed((int) localCount, snapLastPage);
                 }
 
                 // lastCollectedPage > 0 表示部分采集，可续传

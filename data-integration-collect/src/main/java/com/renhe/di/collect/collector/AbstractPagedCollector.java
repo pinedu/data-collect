@@ -423,7 +423,7 @@ public abstract class AbstractPagedCollector<T> implements PagedDataCollector<T>
                 }
 
                 // 首页响应中记录第三方平台数据总量
-                if (pageNum == 1 && pageResult != null) {
+                if (pageNum == startPage && pageResult != null) {
                     ctx.putExtraParam("_thirdPartyTotal", pageResult.getTotal());
                     log.info("[{}] 项目【{}】第三方平台数据总量: {}", getDataType(), ctx.getSourceProjectNum(), pageResult.getTotal());
                 }
@@ -436,6 +436,24 @@ public abstract class AbstractPagedCollector<T> implements PagedDataCollector<T>
                 log.info("[{}] 项目【{}】第{}页采集完成，本页{}条",
                         getDataType(), ctx.getSourceProjectNum(), pageNum,
                         pageResult.getList().size());
+
+                // 内容级跳过：数据尚未到达目标时间范围（如DESC排序时还在更晚的数据区域）
+                if (shouldSkipPage(pageResult.getList(), ctx)) {
+                    log.info("[{}] 项目【{}】第{}页数据尚未到达目标时间范围，跳过本页继续翻页",
+                            getDataType(), ctx.getSourceProjectNum(), pageNum);
+                    if (!pageResult.isHasNext()) {
+                        break;
+                    }
+                    pageNum++;
+                    continue;
+                }
+
+                // 内容级终止：数据已越过目标时间范围（如DESC排序时已早于目标月份）
+                if (isBeyondTimeRange(pageResult.getList(), ctx)) {
+                    log.info("[{}] 项目【{}】第{}页数据已超出目标时间范围，终止流式采集",
+                            getDataType(), ctx.getSourceProjectNum(), pageNum);
+                    break;
+                }
 
                 // 回调处理本页数据（清洗+入库），返回 false 则停止
                 boolean shouldContinue = callback.onPage(pageResult.getList(), pageNum, pageResult.getTotal());

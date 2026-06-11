@@ -15,7 +15,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.web.client.RestClient;
 
 import java.time.Duration;
@@ -31,7 +30,6 @@ import java.time.Duration;
  * - Kimi：图片理解、复杂分析、长上下文（Anthropic/Claude 协议）
  */
 @Configuration
-@EnableScheduling
 public class AiConfig {
 
     /**

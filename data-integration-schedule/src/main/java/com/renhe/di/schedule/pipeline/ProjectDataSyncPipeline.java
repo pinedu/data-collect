@@ -159,10 +159,19 @@ public class ProjectDataSyncPipeline {
                 
 
                 // Step 3-1: 工资考勤统计同步
-                executeStep("工资考勤统计", () -> salaryAttendanceStatsSyncJob.syncSingleProject(project));
+                SyncResult statsResult = executeStep("工资考勤统计",
+                        () -> salaryAttendanceStatsSyncJob.syncSingleProject(project));
 
-                // Step 3-2: 工资考勤明细同步
-                executeStep("工资考勤明细", () -> salaryAttendanceDetailSyncJob.syncSingleProject(project));
+                // 统计触发风控 → 明细直接跳过
+                if (statsResult != null && statsResult.isAntiCrawlerTriggered()) {
+                    log.warn("项目【{}】工资考勤统计触发风控，跳过明细同步", projectName);
+                } else if (statsResult != null && statsResult.getTotalCount() == 0 && statsResult.getFailCount() == 0) {
+                    // 统计无变更（探针跳过，totalCount=0 且无失败）→ 明细也跳过
+                    log.info("项目【{}】工资考勤统计无变更，跳过明细同步", projectName);
+                } else {
+                    // Step 3-2: 工资考勤明细同步
+                    executeStep("工资考勤明细", () -> salaryAttendanceDetailSyncJob.syncSingleProject(project));
+                }
 
                 // Step 4: 工资同步
                 long payrollStartTime = System.currentTimeMillis();
@@ -332,14 +341,14 @@ public class ProjectDataSyncPipeline {
                 rateLimitStrategy.resetAntiCrawlerState(account);
                 break;
             } catch (Exception probeEx) {
-                if (rateLimitStrategy.isAntiCrawlerMessage(probeEx.getMessage())) {
-                    log.error("项目【{}】[{}]第{}轮探针仍被拦截，继续下一轮",
+                if (rateLimitStrategy.isAntiCrawlerException(probeEx)) {
+                    log.error("项目【{}】[{}]第{}轮探针仍被风控拦截，继续下一轮",
                             projectName, dataType, round + 1);
                 } else {
-                    log.warn("项目【{}】[{}]第{}轮探针失败（非风控）: {}，尝试继续",
+                    // 探针失败但非风控关键词（可能是网络抖动、服务不稳定等）
+                    // 安全策略：仍视为未解封，继续下一轮等待
+                    log.warn("项目【{}】[{}]第{}轮探针失败（非风控关键词匹配）: {}，继续下一轮等待",
                             projectName, dataType, round + 1, probeEx.getMessage());
-                    recovered = true;
-                    break;
                 }
             }
         }

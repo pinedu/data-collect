@@ -1,6 +1,6 @@
 package com.renhe.di.schedule.job;
 
-import com.renhe.di.dispatch.alarm.DingTalkAlarmService;
+import com.renhe.di.dispatch.alarm.WechatAlarmService;
 import com.renhe.di.store.service.SyncLogService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -22,7 +22,7 @@ public abstract class AbstractSyncJob {
     protected StringRedisTemplate redisTemplate;
 
     @Autowired
-    protected DingTalkAlarmService alarmService;
+    protected WechatAlarmService alarmService;
 
     /**
      * 执行同步任务（由子类通过@Scheduled触发）
@@ -54,7 +54,7 @@ public abstract class AbstractSyncJob {
             if (logId != null) {
                 syncLogService.failLog(logId, e);
             }
-            // 发送钉钉告警
+            // 发送企业微信告警
             try {
                 alarmService.sendSyncAlarm(projectNum != null ? projectNum : "ALL", getDataType(), e.getMessage());
             } catch (Exception alarmEx) {

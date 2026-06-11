@@ -9,10 +9,12 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.EnableAspectJAutoProxy;
 import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * 数据整理服务启动类
  */
+@EnableScheduling
 @EnableAsync
 @EnableAspectJAutoProxy(exposeProxy = true)
 @SpringBootApplication(scanBasePackages = "com.renhe.di")
