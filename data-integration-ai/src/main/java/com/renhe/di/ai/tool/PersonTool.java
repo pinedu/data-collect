@@ -30,6 +30,64 @@ public class PersonTool extends BaseDataTool {
     private ProjectNameResolver projectNameResolver;
 
     /**
+     * 统计所有项目的在职人员总数（不按项目区分）
+     */
+    @Tool(description = "统计系统中所有在职人员的总人数。当用户问'在职人数'、'有多少人'等不涉及具体项目的问题时调用")
+    public String countAllOnJobPersons() {
+        LambdaQueryWrapper<DiPerson> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(DiPerson::getDeleted, 0);
+        // job_status 为'在职'或 null（默认在职）
+        wrapper.and(w -> w.eq(DiPerson::getJobStatus, "在职").or().isNull(DiPerson::getJobStatus));
+
+        long count = personMapper.selectCount(wrapper);
+        return buildReply("系统中在职人员总数: **" + count + "** 人");
+    }
+
+    /**
+     * 按项目统计在职人员数量
+     */
+    @Tool(description = "按项目统计在职人员数量，返回每个项目的在职人数。当用户问'各项目在职人数'或想查看所有项目人员分布时调用")
+    public String countOnJobByProject() {
+        LambdaQueryWrapper<DiPerson> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(DiPerson::getDeleted, 0);
+        wrapper.and(w -> w.eq(DiPerson::getJobStatus, "在职").or().isNull(DiPerson::getJobStatus));
+        wrapper.last("LIMIT " + MAX_ROWS);
+
+        List<DiPerson> list = personMapper.selectList(wrapper);
+
+        // 按 source_project_num 分组统计
+        Map<String, Long> projectStats = new LinkedHashMap<>();
+        for (DiPerson p : list) {
+            String spn = p.getSourceProjectNum() != null ? p.getSourceProjectNum() : "未知项目";
+            projectStats.merge(spn, 1L, Long::sum);
+        }
+
+        // 获取项目名称映射
+        Map<String, String> projectNameMap = new HashMap<>();
+        if (!projectStats.isEmpty()) {
+            LambdaQueryWrapper<DiProject> pw = new LambdaQueryWrapper<>();
+            pw.in(DiProject::getSourceProjectNum, projectStats.keySet());
+            List<DiProject> projects = projectMapper.selectList(pw);
+            for (DiProject proj : projects) {
+                if (proj.getSourceProjectNum() != null && proj.getProjectName() != null) {
+                    projectNameMap.put(proj.getSourceProjectNum(), proj.getProjectName());
+                }
+            }
+        }
+
+        StringBuilder sb = new StringBuilder("各项目在职人员统计:\n");
+        long total = 0;
+        for (Map.Entry<String, Long> e : projectStats.entrySet()) {
+            String name = projectNameMap.getOrDefault(e.getKey(), e.getKey());
+            sb.append("  ").append(name).append(": ").append(e.getValue()).append("人\n");
+            total += e.getValue();
+        }
+        sb.append("---\n**合计**: ").append(total).append(" 人");
+
+        return buildReply(sb.toString());
+    }
+
+    /**
      * 按姓名模糊搜索人员
      */
     @Tool(description = "按姓名模糊搜索人员，只返回姓名、工种、班组、在岗状态，不返回身份证手机等隐私信息")

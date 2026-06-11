@@ -452,7 +452,7 @@ public class PayrollSyncJob extends AbstractSyncJob {
             }
 
             if (!batch.isEmpty()) {
-                int saved = batchInsertService.batchInsertOrUpdate(batch, payrollDetailService, 500);
+                int saved = batchInsertService.batchInsertOrUpdate(batch, payrollDetailService, 200);
                 log.info("项目【{}】salaryId={} 明细入库 {} 条（共 {} 条）",
                         projectNum, salaryId, saved, batch.size());
                 for (DiPayrollDetail detail : batch) {

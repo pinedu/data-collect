@@ -10,7 +10,7 @@ import java.util.*;
 public abstract class BaseDataTool {
 
     // 最大返回行数
-    protected static final int MAX_ROWS = 20;
+    protected static final int MAX_ROWS = 100;
     // 最大返回字符数
     protected static final int MAX_CHARS = 500;
 

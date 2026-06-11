@@ -20,23 +20,19 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.YearMonth;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
-import java.util.concurrent.ExecutorService;
 
 /**
- * 人员信息同步任务（智能增量）- 按月份时间范围拉取 + 快照比对跳过 + 变更检测提前终止
+ * 人员信息同步任务 - 全量分页拉取 + 快照变更检测
  * <p>
- * Phase A - 变更探测：1次探针获取全局total，与本地+全局快照比对，无变更直接结束
- * Phase B - 逆序月份扫描：从当前月 → 最旧月，逐月按需拉取（传时间范围），连续N月快照匹配则提前终止
- * Phase C - 逐月清洗入库：清洗 → 批量入库 → 事件发布 → 保存月快照
- * Phase D - 一致性校验：第三方总量 vs 本地总量
+ * 第三方人员API不支持时间过滤（传beginDate/endDate仍返回全量数据），
+ * 且人员数据量较小（通常 ≤ 3000条），因此采用直接全量分页拉取策略：
+ * <p>
+ * Phase 1 - 变更探测：1次探针获取全局total，与本地+快照比对，无变更直接结束
+ * Phase 2 - 全量拉取：无时间过滤，逐页拉取全部数据（pageSize=100）
+ * Phase 3 - 清洗入库：清洗 → 批量UPSERT → 事件发布
+ * Phase 4 - 保存快照：保存全局快照（thirdPartyTotal + localTotal）
  */
 @Slf4j
 @Component
@@ -69,17 +65,6 @@ public class PersonSyncJob extends AbstractSyncJob {
     @Autowired
     private RateLimitStrategy rateLimitStrategy;
 
-    @Autowired
-    private ExecutorService syncTaskExecutor;
-
-    private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
-
-    /** 连续快照匹配月份数达到此阈值时，终止逆序扫描 */
-    private static final int STOP_THRESHOLD = 3;
-
-    /** 无快照时的默认起始月份 */
-    private static final YearMonth DEFAULT_EARLIEST_MONTH = YearMonth.of(2020, 1);
-
     /**
      * 支持手动触发或独立调度人员信息同步
      * 默认不参与定时调度，由 ProjectDataSyncPipeline 统一编排
@@ -95,12 +80,12 @@ public class PersonSyncJob extends AbstractSyncJob {
 
     @Override
     protected String getSyncType() {
-        return "INCREMENTAL";
+        return "FULL";
     }
 
     @Override
     protected String getTaskName() {
-        return "人员信息增量同步";
+        return "人员信息全量同步";
     }
 
     @Override
@@ -109,27 +94,16 @@ public class PersonSyncJob extends AbstractSyncJob {
     }
 
     public SyncResult syncSingleProject(DiProjectConfig project) {
-        YearMonth earliestMonth = project.getActualBeginDate() != null
-                ? YearMonth.from(project.getActualBeginDate())
-                : DEFAULT_EARLIEST_MONTH;
         return syncSingleProject(
-                project.getSourceProjectNum(), project.getAccount(), project.getPassword(), earliestMonth);
+                project.getSourceProjectNum(), project.getAccount(), project.getPassword());
     }
 
-    private SyncResult syncSingleProject(String projectNum, String account, String password,
-                                          YearMonth earliestMonth) {
-        int totalCount = 0;
-        int successCount = 0;
-        int failCount = 0;
-        int skipCount = 0;
-        boolean antiCrawlerTriggered = false;
-
-        // ===== Phase A: 变更探测（1次轻量API调用）=====
+    private SyncResult syncSingleProject(String projectNum, String account, String password) {
+        // ===== Phase 1: 变更探测（1次轻量API调用）=====
         int thirdPartyTotal = 0;
         try {
             int callSeq = PersonCollector.API_CALL_COUNTER.incrementAndGet();
-            log.info("[PERSON API #{}] PhaseA探针 page=1, pageSize=1, project={}, 无时间过滤",
-                    callSeq, projectNum);
+            log.info("[PERSON API #{}] 探针 page=1, pageSize=1, project={}", callSeq, projectNum);
 
             JSONObject probeData = apiClient.getPersonPage(projectNum, 1, 1, null, null, account, password);
             if (probeData != null) {
@@ -148,7 +122,7 @@ public class PersonSyncJob extends AbstractSyncJob {
             return SyncResult.of(0, 0, 0, 0);
         }
 
-        // 全局变更检测：总量 + 本地数量 + 上次快照 三者一致 → 无变更
+        // 全局变更检测：第三方总量 + 本地数量 + 快照 三者一致 → 无变更
         long localTotal = personService.lambdaQuery()
                 .eq(DiPerson::getSourceProjectNum, projectNum)
                 .eq(DiPerson::getDeleted, 0)
@@ -163,79 +137,28 @@ public class PersonSyncJob extends AbstractSyncJob {
             return SyncResult.of(0, 0, 0, 0);
         }
 
-        log.info("项目【{}】检测到变更（第三方={}，本地={}），开始增量同步，扫描范围【{}~{}】",
-                projectNum, thirdPartyTotal, localTotal, earliestMonth, YearMonth.now());
+        log.info("项目【{}】检测到变更（第三方={}，本地={}），开始全量拉取",
+                projectNum, thirdPartyTotal, localTotal);
 
-        // ===== Phase B: 逆序月份扫描 + 按需拉取 =====
-        YearMonth scanMonth = YearMonth.now();
-        int consecutiveSkips = 0;
-        Set<String> processedIds = new HashSet<>();
-
-        while (!scanMonth.isBefore(earliestMonth)) {
-            final String monthId = scanMonth.toString();
-
-            // Step 1: 轻量探针（pageSize=1，仅获取该月 total）
-            int monthTotal = probeMonthTotal(projectNum, scanMonth, account, password);
-            if (monthTotal < 0) {
-                // 探针异常（可能触发风控）
-                antiCrawlerTriggered = true;
-                log.warn("项目【{}】月份【{}】探针异常，终止扫描", projectNum, monthId);
-                break;
-            }
-
-            // Step 2: 快照比对
-            DiSyncSnapshot snap = syncSnapshotService.getMonthSnapshot(projectNum, "PERSON", monthId);
-            long localMonthCount = countLocalPersons(projectNum, scanMonth);
-
-            if (snap != null && snap.getMonthThirdPartyTotal() != null
-                    && monthTotal == snap.getMonthThirdPartyTotal()
-                    && localMonthCount >= snap.getMonthThirdPartyTotal()) {
-                consecutiveSkips++;
-                log.info("项目【{}】月份【{}】快照匹配（第三方={}，本地={}），跳过 [{}/{}]",
-                        projectNum, monthId, monthTotal, localMonthCount,
-                        consecutiveSkips, STOP_THRESHOLD);
-                if (consecutiveSkips >= STOP_THRESHOLD) {
-                    log.info("项目【{}】连续{}个月快照匹配，终止扫描（更早月份视为无变更）",
-                            projectNum, consecutiveSkips);
-                    break;
-                }
-                scanMonth = scanMonth.minusMonths(1);
-                continue;
-            }
-
-            consecutiveSkips = 0; // 有变更，重置计数
-
-            // Step 3: 该月有变更或从未同步，按需拉取
-            if (monthTotal > 0) {
-                log.info("项目【{}】月份【{}】需要同步（第三方={}，本地={}，快照={}）",
-                        projectNum, monthId, monthTotal, localMonthCount,
-                        snap != null ? snap.getMonthThirdPartyTotal() : "无");
-
-                List<JSONObject> monthData = fetchMonthData(projectNum, scanMonth, account, password);
-
-                if (monthData != null && !monthData.isEmpty()) {
-                    int[] result = processMonthData(projectNum, scanMonth, monthId, monthData, processedIds);
-                    totalCount += result[0];
-                    successCount += result[1];
-                    failCount += result[2];
-                    skipCount += result[3];
-                    if (result[4] == 1) {
-                        antiCrawlerTriggered = true;
-                        log.warn("项目【{}】月份【{}】拉取触发风控，终止扫描", projectNum, monthId);
-                        break;
-                    }
-                }
-            } else {
-                log.info("项目【{}】月份【{}】第三方无数据", projectNum, monthId);
-            }
-
-            scanMonth = scanMonth.minusMonths(1);
+        // ===== Phase 2: 全量分页拉取（无时间过滤）=====
+        List<JSONObject> allData = fetchAllData(projectNum, account, password);
+        if (allData.isEmpty()) {
+            log.info("项目【{}】全量拉取无数据", projectNum);
+            return SyncResult.of(0, 0, 0, 0);
         }
 
-        log.info("项目【{}】人员增量同步完成：总计{}条，成功{}条，失败{}条，跳过{}条",
+        // ===== Phase 3: 清洗入库 =====
+        int[] result = processAllData(projectNum, allData);
+        int totalCount = result[0];
+        int successCount = result[1];
+        int failCount = result[2];
+        int skipCount = result[3];
+        boolean antiCrawlerTriggered = result[4] == 1;
+
+        log.info("项目【{}】人员全量同步完成：总计{}条，成功{}条，失败{}条，跳过{}条",
                 projectNum, totalCount, successCount, failCount, skipCount);
 
-        // ===== Phase D: 一致性校验 =====
+        // ===== Phase 4: 保存全局快照 =====
         try {
             long finalLocalTotal = personService.lambdaQuery()
                     .eq(DiPerson::getSourceProjectNum, projectNum)
@@ -254,51 +177,19 @@ public class PersonSyncJob extends AbstractSyncJob {
     // ==================== 私有辅助方法 ====================
 
     /**
-     * 轻量探针：获取指定月份的数据总量（pageSize=1，不拉取实际数据）
-     *
-     * @return 该月第三方数据总量，-1 表示请求失败
+     * 全量分页拉取所有人员数据（无时间过滤，pageSize=100）
+     * <p>
+     * 终止条件：某页返回 &lt; pageSize 条，或 page * pageSize >= total
      */
-    private int probeMonthTotal(String projectNum, YearMonth month, String account, String password) {
-        try {
-            int callSeq = PersonCollector.API_CALL_COUNTER.incrementAndGet();
-            String beginDate = month.atDay(1).format(DATE_FMT);
-            String endDate = month.atEndOfMonth().format(DATE_FMT);
-            log.info("[PERSON API #{}] 月份探针 page=1, pageSize=1, project={}, month={}",
-                    callSeq, projectNum, month);
-
-            JSONObject data = apiClient.getPersonPage(projectNum, 1, 1,
-                    beginDate, endDate, account, password);
-            return data != null ? data.getInt("total", 0) : 0;
-        } catch (Exception e) {
-            if (isAntiCrawlerMessage(e)) {
-                log.error("项目【{}】月份【{}】探针触发风控", projectNum, month);
-            } else {
-                log.warn("项目【{}】月份【{}】探针失败: {}", projectNum, month, e.getMessage());
-            }
-            return -1;
-        }
-    }
-
-    /**
-     * 拉取指定月份的全部人员数据（简单逐页循环，pageSize=100）
-     *
-     * <p>用响应自身的 total 决定是否翻页：
-     * <ul>
-     *   <li>大多数月份 &lt; 100 条 → 一次请求即到下一个月</li>
-     *   <li>total &gt; 100 时继续下一页</li>
-     *   <li>某页返回 &lt; pageSize 条 → 最后一页，停止</li>
-     * </ul>
-     */
-    private List<JSONObject> fetchMonthData(String projectNum, YearMonth month,
-                                             String account, String password) {
+    private List<JSONObject> fetchAllData(String projectNum, String account, String password) {
         List<JSONObject> allData = new ArrayList<>();
         int pageSize = 100;
+
+        // 不传时间范围，API返回全量数据
         CollectContext ctx = CollectContext.builder()
                 .sourceProjectNum(projectNum)
                 .account(account)
                 .password(password)
-                .beginTime(month.atDay(1).atStartOfDay())
-                .endTime(month.atEndOfMonth().atTime(23, 59, 59))
                 .build();
 
         try {
@@ -309,25 +200,25 @@ public class PersonSyncJob extends AbstractSyncJob {
                         "PERSON", projectNum, currentPage, account);
 
                 if (pageResult == null || pageResult.getList() == null || pageResult.getList().isEmpty()) {
-                    log.info("项目【{}】月份【{}】第{}页无数据（pageSize={}），月份采集结束", projectNum, month, page, pageSize);
+                    log.info("项目【{}】第{}页无数据，拉取结束", projectNum, page);
                     break;
                 }
 
                 allData.addAll(pageResult.getList());
                 int total = pageResult.getTotal();
 
-                log.info("项目【{}】月份【{}】第{}页完成，本页{}条/{}，响应total={}，累计{}条",
-                        projectNum, month, page, pageResult.getList().size(), pageSize, total, allData.size());
+                log.info("项目【{}】第{}页完成，本页{}条，响应total={}，累计{}条",
+                        projectNum, page, pageResult.getList().size(), total, allData.size());
 
-                // 某页返回 < pageSize 条 → 最后一页
+                // 最后一页
                 if (pageResult.getList().size() < pageSize) {
                     break;
                 }
 
-                // 响应 total 已知且当前页已覆盖全部数据
+                // 已采集全部数据
                 if (total > 0 && page * pageSize >= total) {
-                    log.info("项目【{}】月份【{}】已采集全部{}条（total={}，pageSize={}），月份采集结束",
-                            projectNum, month, allData.size(), total, pageSize);
+                    log.info("项目【{}】已采集全部{}条（total={}），拉取结束",
+                            projectNum, allData.size(), total);
                     break;
                 }
 
@@ -336,55 +227,33 @@ public class PersonSyncJob extends AbstractSyncJob {
             }
             return allData;
         } catch (Exception e) {
-            log.error("项目【{}】月份【{}】数据拉取失败（已采集{}条）: {}",
-                    projectNum, month, allData.size(), e.getMessage());
+            log.error("项目【{}】全量拉取失败（已采集{}条）: {}", projectNum, allData.size(), e.getMessage());
             return allData;
         }
     }
 
     /**
-     * 处理单月数据：清洗 → 入库 → 事件发布 → 保存快照
+     * 清洗全部数据 → 批量UPSERT → 事件发布
      *
      * @return [totalCount, successCount, failCount, skipCount, antiCrawlerFlag(0/1)]
      */
-    private int[] processMonthData(String projectNum, YearMonth month, String monthId,
-                                    List<JSONObject> monthData, Set<String> processedIds) {
+    private int[] processAllData(String projectNum, List<JSONObject> allData) {
         int total = 0, success = 0, fail = 0, skip = 0;
 
-        LocalDate minBeginDate = null;
         CleanContext cleanCtx = CleanContext.builder()
                 .sourceProjectNum(projectNum)
                 .dataType("PERSON")
                 .build();
 
         List<DiPerson> personBatch = new ArrayList<>();
-        for (JSONObject raw : monthData) {
+        for (JSONObject raw : allData) {
             total++;
             String dataId = raw.getStr("id");
-
-            if (processedIds.contains(dataId)) {
-                skip++;
-                continue;
-            }
-
-            // 追踪最小 beginDate 作为 monthSyncDate
-            String beginDateStr = raw.getStr("beginDate");
-            if (beginDateStr != null && !beginDateStr.isEmpty()) {
-                try {
-                    LocalDate bd = LocalDate.parse(beginDateStr, DATE_FMT);
-                    if (minBeginDate == null || bd.isBefore(minBeginDate)) {
-                        minBeginDate = bd;
-                    }
-                } catch (Exception e) {
-                    log.warn("登记时间解析失败: {}", beginDateStr);
-                }
-            }
 
             try {
                 DiPerson person = cleanPipeline.execute(raw, cleanCtx, "PERSON");
                 if (person != null) {
                     personBatch.add(person);
-                    processedIds.add(dataId);
                 } else {
                     skip++;
                 }
@@ -394,9 +263,9 @@ public class PersonSyncJob extends AbstractSyncJob {
             }
         }
 
-        // 批量入库
+        // 批量UPSERT入库
         if (!personBatch.isEmpty()) {
-            int batchSuccess = batchInsertService.batchInsertOrUpdate(personBatch, personService, 500);
+            int batchSuccess = batchInsertService.batchInsertOrUpdate(personBatch, personService, 200);
             success += batchSuccess;
             fail += (personBatch.size() - batchSuccess);
 
@@ -405,34 +274,9 @@ public class PersonSyncJob extends AbstractSyncJob {
             }
         }
 
-        // 保存月份快照
-        if (minBeginDate != null && monthData.size() > 0) {
-            try {
-                syncSnapshotService.saveMonthSnapshot(
-                        projectNum, "PERSON", monthId,
-                        minBeginDate.atStartOfDay(), monthData.size());
-                log.info("项目【{}】月份【{}】快照已保存：monthSyncDate={}, thirdTotal={}",
-                        projectNum, monthId, minBeginDate, monthData.size());
-            } catch (Exception e) {
-                log.error("项目【{}】月份【{}】快照保存失败: {}", projectNum, monthId, e.getMessage());
-            }
-        }
-
-        log.info("项目【{}】月份【{}】处理完成：总计{}条，成功{}条，失败{}条，跳过{}条",
-                projectNum, monthId, total, success, fail, skip);
+        log.info("项目【{}】数据处理完成：总计{}条，成功{}条，失败{}条，跳过{}条",
+                projectNum, total, success, fail, skip);
 
         return new int[]{total, success, fail, skip, 0};
-    }
-
-    /**
-     * 统计本地指定月份的人员数量
-     */
-    private long countLocalPersons(String projectNum, YearMonth month) {
-        return personService.lambdaQuery()
-                .eq(DiPerson::getSourceProjectNum, projectNum)
-                .eq(DiPerson::getDeleted, 0)
-                .ge(DiPerson::getRegisterTime, month.atDay(1))
-                .le(DiPerson::getRegisterTime, month.atEndOfMonth())
-                .count();
     }
 }

@@ -21,10 +21,10 @@ public interface BatchInsertService {
     <T> boolean batchInsert(List<T> entities, int batchSize);
 
     /**
-     * 批量插入（默认每500条一批）
+     * 批量插入（默认每200条一批）
      */
     default <T> boolean batchInsert(List<T> entities) {
-        return batchInsert(entities, 500);
+        return batchInsert(entities, 200);
     }
 
     /**
@@ -40,9 +40,9 @@ public interface BatchInsertService {
     <T> int batchInsertOrUpdate(List<T> entities, IService<T> service, int batchSize);
 
     /**
-     * 批量插入或更新（默认每500条一批）
+     * 批量插入或更新（默认每200条一批）
      */
     default <T> int batchInsertOrUpdate(List<T> entities, IService<T> service) {
-        return batchInsertOrUpdate(entities, service, 500);
+        return batchInsertOrUpdate(entities, service, 200);
     }
 }

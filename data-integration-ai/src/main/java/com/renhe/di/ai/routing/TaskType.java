@@ -10,7 +10,7 @@ public enum TaskType {
 
     /**
      * SQL 查询类：涉及数据库查询、统计、列表
-     * 路由到：DeepSeek（快速、低成本）
+     * 路由到：MiniMax（快速、低成本）
      */
     SQL_QUERY,
 
@@ -28,13 +28,13 @@ public enum TaskType {
 
     /**
      * 工具调用类：考勤、人员、项目、班组等业务查询
-     * 路由到：DeepSeek（Function Calling 稳定）
+     * 路由到：MiniMax（Function Calling 稳定）
      */
     TOOL_CALLING,
 
     /**
      * 闲聊/其他：问候、简单问答
-     * 路由到：DeepSeek（快速响应）
+     * 路由到：MiniMax（快速响应）
      */
     CHAT
 }

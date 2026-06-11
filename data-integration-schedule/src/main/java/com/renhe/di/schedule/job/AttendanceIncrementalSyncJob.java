@@ -154,7 +154,7 @@ public class AttendanceIncrementalSyncJob extends AbstractSyncJob {
 
             // 批量插入或更新
             if (!attendanceList.isEmpty()) {
-                int batchSuccess = batchInsertService.batchInsertOrUpdate(attendanceList, attendanceService, 500);
+                int batchSuccess = batchInsertService.batchInsertOrUpdate(attendanceList, attendanceService, 200);
                 successCount += batchSuccess;
                 failCount += (attendanceList.size() - batchSuccess);
 

@@ -2,6 +2,7 @@ package com.renhe.di.collect.api;
 
 import cn.hutool.crypto.digest.DigestUtil;
 import cn.hutool.http.HttpRequest;
+import cn.hutool.http.HttpResponse;
 import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
@@ -62,6 +63,9 @@ public class ThirdPartyApiClient {
     private String attendanceUrl;
     private String payrollUrl;
     private String payrollDetailUrl;
+    private String warningIndicatorsUrl;
+    private String salaryAndAttendUrl;
+    private String downloadAttendanceListUrl;
 
     @PostConstruct
     public void init() {
@@ -72,6 +76,9 @@ public class ThirdPartyApiClient {
         this.attendanceUrl = collectHost + "/attend/list";
         this.payrollUrl = collectHost + "/rrs/salary/list";
         this.payrollDetailUrl = collectHost + "/rrs/salaryDetail/list";
+        this.warningIndicatorsUrl = collectHost + "/sixIndex/newIndicators/getIndicator/";
+        this.salaryAndAttendUrl = collectHost + "/sixIndex/warning/project/salaryAndAttend";
+        this.downloadAttendanceListUrl = collectHost + "/sixIndex/project/downloadAttendanceList";
         log.info("第三方API客户端初始化完成，host={}", collectHost);
     }
 
@@ -305,6 +312,108 @@ public class ThirdPartyApiClient {
                 .execute().body();
 
         return parseResponse(body, "企业详情");
+    }
+
+    /**
+     * 获取项目6个百分百预警指标数据
+     */
+    public JSONObject getWarningIndicators(String projectNum, String account, String password) {
+        String timestamp = System.currentTimeMillis() + "";
+        Map<String, Object> bodyMap = new HashMap<>(3);
+        bodyMap.put("appkey", appKey);
+        bodyMap.put("timestamp", timestamp);
+        String signStr = getSignStr(bodyMap);
+        String referer = "https://ldyg.guizhou.gov.cn/collect/";
+        Map<String, String> headMap = getHeadMap(signStr, referer, timestamp, account, password);
+
+        String body = HttpRequest.get(warningIndicatorsUrl + projectNum)
+                .addHeaders(headMap)
+                .timeout(30000)
+                .execute().body();
+
+        return parseResponse(body, "预警指标");
+    }
+
+    /**
+     * 获取项目月份工资考勤统计信息（按年）
+     *
+     * @param projectNum 项目编号
+     * @param whichYear  年份，如 "2025"
+     * @return data节点，包含 list.total（年度汇总）和 list.list（各月明细）
+     */
+    public JSONObject getSalaryAndAttendStats(String projectNum, String whichYear,
+                                               String account, String password) {
+        String timestamp = System.currentTimeMillis() + "";
+        Map<String, Object> bodyMap = new HashMap<>(5);
+        bodyMap.put("appkey", appKey);
+        bodyMap.put("timestamp", timestamp);
+        bodyMap.put("projectNum", projectNum);
+        bodyMap.put("whichYear", whichYear);
+        String signStr = getSignStr(bodyMap);
+        String referer = "https://ldyg.guizhou.gov.cn/collect/";
+        Map<String, String> headMap = getHeadMap(signStr, referer, timestamp, account, password);
+
+        String body = HttpRequest.post(salaryAndAttendUrl)
+                .addHeaders(headMap)
+                .body(JSONUtil.toJsonStr(bodyMap))
+                .timeout(30000)
+                .execute().body();
+
+        return parseResponse(body, "工资考勤统计");
+    }
+
+    /**
+     * 下载项目考勤列表（Excel文件）
+     *
+     * @param projectNum 项目编号
+     * @param dateMonth  日期月份，如 "202501"
+     * @return Excel文件字节数组（xlsx格式）
+     * @throws RuntimeException 当返回非Excel内容或触发风控时抛出
+     */
+    public byte[] downloadAttendanceList(String projectNum, String dateMonth,
+                                          String account, String password) {
+        String timestamp = System.currentTimeMillis() + "";
+        Map<String, Object> bodyMap = new HashMap<>(5);
+        bodyMap.put("appkey", appKey);
+        bodyMap.put("timestamp", timestamp);
+        bodyMap.put("projectNum", projectNum);
+        bodyMap.put("dateMonth", dateMonth);
+        String signStr = getSignStr(bodyMap);
+        String referer = "https://ldyg.guizhou.gov.cn/collect/";
+        Map<String, String> headMap = getHeadMap(signStr, referer, timestamp, account, password);
+        // Excel下载专用头
+        headMap.put("Accept", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, */*");
+
+        HttpResponse response = HttpRequest.post(downloadAttendanceListUrl)
+                .addHeaders(headMap)
+                .body(JSONUtil.toJsonStr(bodyMap))
+                .timeout(60000)
+                .execute();
+
+        String contentType = response.header("Content-Type");
+        byte[] bodyBytes = response.bodyBytes();
+
+        // 如果返回JSON/HTML，说明请求失败或触发风控
+        if (contentType != null && (contentType.contains("application/json") || contentType.contains("text/html"))) {
+            String bodyStr = bodyBytes != null ? new String(bodyBytes) : "空响应";
+            String errMsg = String.format("下载考勤列表返回非Excel内容: projectNum=%s, dateMonth=%s, body=%s",
+                    projectNum, dateMonth, bodyStr.length() > 500 ? bodyStr.substring(0, 500) : bodyStr);
+            log.error(errMsg);
+            throw new RuntimeException(errMsg);
+        }
+
+        // 校验文件头：xlsx本质是ZIP，前两字节为 PK (0x50 0x4B)
+        if (bodyBytes == null || bodyBytes.length < 4
+                || bodyBytes[0] != 0x50 || bodyBytes[1] != 0x4B) {
+            String bodyStr = bodyBytes != null ? new String(bodyBytes) : "空";
+            String errMsg = String.format("下载考勤列表返回非Excel文件: projectNum=%s, dateMonth=%s, body=%s",
+                    projectNum, dateMonth, bodyStr.length() > 500 ? bodyStr.substring(0, 500) : bodyStr);
+            log.error(errMsg);
+            throw new RuntimeException(errMsg);
+        }
+
+        log.info("项目【{}】月份【{}】考勤列表下载成功，大小={}bytes", projectNum, dateMonth, bodyBytes.length);
+        return bodyBytes;
     }
 
     // ==================== 私有方法 ====================

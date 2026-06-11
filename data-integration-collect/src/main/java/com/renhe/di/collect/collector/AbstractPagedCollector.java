@@ -380,6 +380,100 @@ public abstract class AbstractPagedCollector<T> implements PagedDataCollector<T>
     }
 
     /**
+     * 流式分页采集：每采集一页立即回调处理，避免整月数据积累在内存。
+     * <p>
+     * 每页成功采集后会保存 checkpoint（调用方负责），风控中断后下次可从断点页码续采。
+     *
+     * @param ctx        采集上下文
+     * @param startPage  起始页码（断点续传时从上次失败页开始）
+     * @param callback   每页数据处理回调，返回 false 则停止采集
+     */
+    public void collectStreaming(CollectContext ctx, int startPage, PageCallback<T> callback) {
+        int pageNum = startPage;
+        int pageSize = getPageSize();
+        String account = ctx.getAccount();
+
+        if (!rateLimitStrategy.tryAcquire(account)) {
+            log.error("[{}] 项目【{}】获取账号并发许可超时，跳过采集", getDataType(), ctx.getSourceProjectNum());
+            return;
+        }
+
+        try {
+            while (true) {
+                PageResult<T> pageResult;
+                final int currentPage = pageNum;
+                try {
+                    pageResult = rateLimitStrategy.executeWithRetry(
+                            () -> collectPage(ctx, currentPage, pageSize),
+                            getDataType(),
+                            ctx.getSourceProjectNum(),
+                            currentPage,
+                            account
+                    );
+                } catch (Exception e) {
+                    if (isAntiCrawlerException(e)) {
+                        ctx.putExtraParam("_antiCrawlerTriggered", true);
+                        log.error("[{}] 项目【{}】第{}页触发风控，终止流式采集: {}",
+                                getDataType(), ctx.getSourceProjectNum(), pageNum, e.getMessage());
+                    } else {
+                        log.error("[{}] 项目【{}】第{}页采集失败: {}",
+                                getDataType(), ctx.getSourceProjectNum(), pageNum, e.getMessage());
+                    }
+                    break;
+                }
+
+                // 首页响应中记录第三方平台数据总量
+                if (pageNum == 1 && pageResult != null) {
+                    ctx.putExtraParam("_thirdPartyTotal", pageResult.getTotal());
+                    log.info("[{}] 项目【{}】第三方平台数据总量: {}", getDataType(), ctx.getSourceProjectNum(), pageResult.getTotal());
+                }
+
+                if (pageResult == null || pageResult.getList() == null || pageResult.getList().isEmpty()) {
+                    log.info("[{}] 项目【{}】第{}页无数据，流式采集结束", getDataType(), ctx.getSourceProjectNum(), pageNum);
+                    break;
+                }
+
+                log.info("[{}] 项目【{}】第{}页采集完成，本页{}条",
+                        getDataType(), ctx.getSourceProjectNum(), pageNum,
+                        pageResult.getList().size());
+
+                // 回调处理本页数据（清洗+入库），返回 false 则停止
+                boolean shouldContinue = callback.onPage(pageResult.getList(), pageNum, pageResult.getTotal());
+                if (!shouldContinue) {
+                    log.warn("[{}] 项目【{}】第{}页回调返回停止信号，终止流式采集",
+                            getDataType(), ctx.getSourceProjectNum(), pageNum);
+                    break;
+                }
+
+                if (!pageResult.isHasNext()) {
+                    log.info("[{}] 项目【{}】流式分页采集完成，共{}页",
+                            getDataType(), ctx.getSourceProjectNum(), pageNum);
+                    break;
+                }
+                pageNum++;
+            }
+        } finally {
+            rateLimitStrategy.release(account);
+        }
+    }
+
+    /**
+     * 流式采集页回调接口
+     */
+    @FunctionalInterface
+    public interface PageCallback<T> {
+        /**
+         * 处理一页数据
+         *
+         * @param pageData 本页数据列表
+         * @param pageNum  当前页码
+         * @param total    第三方返回的总量
+         * @return true=继续采集下一页，false=停止采集
+         */
+        boolean onPage(List<T> pageData, int pageNum, int total);
+    }
+
+    /**
      * 遍历整个异常链，检查是否包含风控/反爬虫关键词
      * 比 instanceof AntiCrawlerException 更可靠，因为异常可能被 CompletableFuture 等框架包装
      */

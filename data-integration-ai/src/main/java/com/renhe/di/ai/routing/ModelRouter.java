@@ -9,21 +9,16 @@ import org.springframework.stereotype.Component;
 /**
  * 模型路由器
  * <p>
- * 根据任务类型自动选择最适合的 AI 模型（ChatClient）。
- * <p>
- * 路由策略：
- * - VISION / COMPLEX_REASONING → Kimi（多模态、强推理）
- * - SQL_QUERY / TOOL_CALLING / CHAT → DeepSeek（快速、低成本、Function Calling 稳定）
- * <p>
- * 支持降级：首选模型不可用时自动切换备用模型。
+ * 极简路由：只有图片理解必须走 Kimi（多模态），其他全部走 MiniMax。
+ * 意图识别和工具选择完全交给 LLM 自主判断。
  */
 @Slf4j
 @Component
 public class ModelRouter {
 
     @Resource
-    @Qualifier("deepseekChatClient")
-    private ChatClient deepseekClient;
+    @Qualifier("minimaxChatClient")
+    private ChatClient minimaxClient;
 
     @Resource
     @Qualifier("kimiChatClient")
@@ -51,12 +46,12 @@ public class ModelRouter {
      */
     public ChatClient routeByTaskType(TaskType taskType) {
         ChatClient selected = switch (taskType) {
-            case VISION, COMPLEX_REASONING -> kimiClient;
-            case SQL_QUERY, TOOL_CALLING, CHAT -> deepseekClient;
+            case VISION -> kimiClient;
+            case TOOL_CALLING, CHAT, SQL_QUERY, COMPLEX_REASONING -> minimaxClient;
         };
 
         log.info("模型路由: taskType={}, selected={}", taskType,
-                selected == kimiClient ? "Kimi" : "DeepSeek");
+                selected == kimiClient ? "Kimi" : "MiniMax");
 
         return selected;
     }
@@ -74,13 +69,13 @@ public class ModelRouter {
     /**
      * 获取指定名称的模型客户端
      *
-     * @param modelName 模型名称（deepseek / kimi）
+     * @param modelName 模型名称（minimax / kimi）
      * @return 对应的 ChatClient
      */
     public ChatClient getClient(String modelName) {
         if ("kimi".equalsIgnoreCase(modelName)) {
             return kimiClient;
         }
-        return deepseekClient;
+        return minimaxClient;
     }
 }

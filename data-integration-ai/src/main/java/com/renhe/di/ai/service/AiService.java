@@ -3,11 +3,14 @@ package com.renhe.di.ai.service;
 import com.renhe.di.ai.routing.ModelRouter;
 import com.renhe.di.ai.service.InteractService;
 import com.renhe.di.ai.tool.AttendanceTool;
+import com.renhe.di.ai.tool.DescribeTableTool;
 import com.renhe.di.ai.tool.PersonTool;
 import com.renhe.di.ai.tool.ProjectTool;
 import com.renhe.di.ai.tool.RemoteAgentTool;
+import com.renhe.di.ai.tool.SalaryAttendanceTool;
 import com.renhe.di.ai.tool.SqlQueryTool;
 import com.renhe.di.ai.tool.TeamTool;
+import com.renhe.di.ai.tool.WarningIndicatorsTool;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
@@ -26,7 +29,7 @@ import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
  * 每个微信用户（conversationId）拥有独立的对话上下文。
  * <p>
  * 模型路由策略：
- * - SQL 查询 / 工具调用 / 闲聊 → DeepSeek（快速、低成本）
+ * - SQL 查询 / 工具调用 / 闲聊 → MiniMax（快速、低成本）
  * - 图片理解 / 复杂分析 → Kimi（多模态、强推理）
  */
 @Slf4j
@@ -50,6 +53,15 @@ public class AiService {
 
     @Resource
     private SqlQueryTool sqlQueryTool;
+
+    @Resource
+    private DescribeTableTool describeTableTool;
+
+    @Resource
+    private WarningIndicatorsTool warningIndicatorsTool;
+
+    @Resource
+    private SalaryAttendanceTool salaryAttendanceTool;
 
     @Resource
     private InteractService interactService;
@@ -100,7 +112,8 @@ public class AiService {
                     .user(userQuestion)
                     .advisors(a -> a
                             .param(CONVERSATION_ID, conversationId))
-                    .tools(attendanceTool, projectTool, personTool, teamTool, sqlQueryTool, remoteAgentTool, interactService)
+                    .tools(describeTableTool, warningIndicatorsTool, salaryAttendanceTool,
+                            attendanceTool, projectTool, personTool, teamTool, sqlQueryTool, remoteAgentTool, interactService)
                     .call()
                     .content();
 

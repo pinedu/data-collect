@@ -44,4 +44,10 @@ public class DiSyncSnapshot extends BaseEntity {
 
     /** 月份第三方数据总量（该时间范围内的第三方数据条数） */
     private Integer monthThirdPartyTotal;
+
+    /** 已采集到的最后一页页码（0=未开始，null=非月份级快照） */
+    private Integer lastCollectedPage;
+
+    /** 月份第三方数据总页数（ceil(monthThirdPartyTotal / pageSize)） */
+    private Integer monthTotalPages;
 }

@@ -144,6 +144,52 @@ public class SyncSnapshotServiceImpl extends ServiceImpl<DiSyncSnapshotMapper, D
     }
 
     @Override
+    public void savePageCheckpoint(String sourceProjectNum, String dataType, String monthId,
+                                   int lastCollectedPage, int monthTotalPages, int monthThirdPartyTotal) {
+        if (monthThirdPartyTotal <= 0) {
+            return;
+        }
+        DiSyncSnapshot exist = getMonthSnapshot(sourceProjectNum, dataType, monthId);
+        if (exist != null) {
+            exist.setLastCollectedPage(lastCollectedPage);
+            exist.setMonthTotalPages(monthTotalPages);
+            exist.setMonthThirdPartyTotal(monthThirdPartyTotal);
+            exist.setSyncTime(LocalDateTime.now());
+            updateById(exist);
+        } else {
+            DiSyncSnapshot snapshot = new DiSyncSnapshot();
+            snapshot.setSourceProjectNum(sourceProjectNum);
+            snapshot.setDataType(dataType);
+            snapshot.setMonthId(monthId);
+            snapshot.setLastCollectedPage(lastCollectedPage);
+            snapshot.setMonthTotalPages(monthTotalPages);
+            snapshot.setMonthThirdPartyTotal(monthThirdPartyTotal);
+            snapshot.setSyncTime(LocalDateTime.now());
+            try {
+                save(snapshot);
+            } catch (DataIntegrityViolationException e) {
+                log.warn("月份检查点插入冲突，回退更新: 项目={}, 类型={}, 月份={}", sourceProjectNum, dataType, monthId);
+                DiSyncSnapshot retryExist = getMonthSnapshot(sourceProjectNum, dataType, monthId);
+                if (retryExist != null) {
+                    retryExist.setLastCollectedPage(lastCollectedPage);
+                    retryExist.setMonthTotalPages(monthTotalPages);
+                    retryExist.setMonthThirdPartyTotal(monthThirdPartyTotal);
+                    retryExist.setSyncTime(LocalDateTime.now());
+                    updateById(retryExist);
+                }
+            }
+        }
+    }
+
+    @Override
+    public void markMonthComplete(String sourceProjectNum, String dataType, String monthId,
+                                   int monthThirdPartyTotal) {
+        // lastCollectedPage = -1 表示该月份已全部采集完成
+        savePageCheckpoint(sourceProjectNum, dataType, monthId, -1, 0, monthThirdPartyTotal);
+        log.info("月份【{}】标记为采集完成，第三方总量={}", monthId, monthThirdPartyTotal);
+    }
+
+    @Override
     public DiSyncSnapshot getLatestSnapshot(String sourceProjectNum, String dataType) {
         return lambdaQuery()
                 .eq(DiSyncSnapshot::getSourceProjectNum, sourceProjectNum)

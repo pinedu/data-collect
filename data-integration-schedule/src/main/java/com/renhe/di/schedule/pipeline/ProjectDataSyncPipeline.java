@@ -34,6 +34,9 @@ public class ProjectDataSyncPipeline {
     private ProjectSyncJob projectSyncJob;
 
     @Autowired
+    private WarningIndicatorsSyncJob warningIndicatorsSyncJob;
+
+    @Autowired
     private TeamSyncJob teamSyncJob;
 
     @Autowired
@@ -44,6 +47,12 @@ public class ProjectDataSyncPipeline {
 
     @Autowired
     private AttendanceFullSyncJob attendanceFullSyncJob;
+
+    @Autowired
+    private SalaryAttendanceStatsSyncJob salaryAttendanceStatsSyncJob;
+
+    @Autowired
+    private SalaryAttendanceDetailSyncJob salaryAttendanceDetailSyncJob;
 
     @Autowired
     private TokenManager tokenManager;
@@ -111,6 +120,9 @@ public class ProjectDataSyncPipeline {
                     return;
                 }
 
+                // Step 1-1: 项目6个百分百预警指标同步
+                executeStep("预警指标", () -> warningIndicatorsSyncJob.syncSingleProject(project));
+
                 // Step 2: 班组信息同步
                 SyncResult teamResult = executeStep("班组信息", () -> teamSyncJob.syncSingleProject(project));
                 if (teamResult == null) {
@@ -132,8 +144,8 @@ public class ProjectDataSyncPipeline {
                         return;
                     }
 
-                    // 风控已解除，重试人员同步（渐进式断点续传：已完成月份自动跳过）
-                    log.info("项目【{}】风控已解除，重试人员同步（渐进式断点续传）", projectName);
+                    // 风控已解除，重试人员同步（全量UPSERT幂等安全）
+                    log.info("项目【{}】风控已解除，重试人员同步", projectName);
                     SyncResult retryPersonResult = executeStep("人员信息(续传)",
                             () -> personSyncJob.syncSingleProject(project));
                     if (retryPersonResult != null) {
@@ -144,6 +156,13 @@ public class ProjectDataSyncPipeline {
                                 projectName, mergedTotal, mergedSuccess, mergedFail);
                     }
                 }
+                
+
+                // Step 3-1: 工资考勤统计同步
+                executeStep("工资考勤统计", () -> salaryAttendanceStatsSyncJob.syncSingleProject(project));
+
+                // Step 3-2: 工资考勤明细同步
+                executeStep("工资考勤明细", () -> salaryAttendanceDetailSyncJob.syncSingleProject(project));
 
                 // Step 4: 工资同步
                 long payrollStartTime = System.currentTimeMillis();

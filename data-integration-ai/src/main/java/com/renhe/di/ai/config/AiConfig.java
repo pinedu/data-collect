@@ -23,11 +23,11 @@ import java.time.Duration;
 /**
  * Spring AI 核心配置
  * <p>
- * 配置多模型 ChatClient（DeepSeek + Kimi）+ ChatMemory（JDBC 持久化，重启不丢失），
+ * 配置多模型 ChatClient（MiniMax + Kimi）+ ChatMemory（JDBC 持久化，重启不丢失），
  * 实现多用户对话隔离和上下文连续追问。
  * <p>
  * 模型路由策略：
- * - DeepSeek：SQL查询、工具调用、闲聊（OpenAI 协议）
+ * - MiniMax：SQL查询、工具调用、闲聊（OpenAI 协议）
  * - Kimi：图片理解、复杂分析、长上下文（Anthropic/Claude 协议）
  */
 @Configuration
@@ -78,16 +78,16 @@ public class AiConfig {
     }
 
     /**
-     * DeepSeek ChatClient — OpenAI 协议
+     * MiniMax ChatClient — OpenAI 协议
      * 用于 SQL 查询、工具调用、快速回复
      */
-    @Bean("deepseekChatClient")
-    public ChatClient deepseekChatClient(
-            @Value("${ai.models.deepseek.api-key:}") String apiKey,
-            @Value("${ai.models.deepseek.base-url:https://api.deepseek.com}") String baseUrl,
-            @Value("${ai.models.deepseek.model:deepseek-v4-pro}") String model,
-            @Value("${ai.models.deepseek.temperature:0.1}") double temperature,
-            @Value("${ai.models.deepseek.timeout-seconds:120}") int timeoutSeconds,
+    @Bean("minimaxChatClient")
+    public ChatClient minimaxChatClient(
+            @Value("${ai.models.minimax.api-key:}") String apiKey,
+            @Value("${ai.models.minimax.base-url:https://api.minimaxi.com/v1}") String baseUrl,
+            @Value("${ai.models.minimax.model:MiniMax-M2.7}") String model,
+            @Value("${ai.models.minimax.temperature:0.1}") double temperature,
+            @Value("${ai.models.minimax.timeout-seconds:120}") int timeoutSeconds,
             ChatMemory chatMemory) {
 
         // 配置带超时的 RestClient，防止 RemoteAgentTool 返回大内容后 LLM 处理超时
@@ -159,7 +159,7 @@ public class AiConfig {
     }
 
     /**
-     * 构建 System Prompt（DeepSeek 专用 — 包含完整 Schema 用于 SQL 查询）
+     * 构建 System Prompt（MiniMax 专用 — 包含完整 Schema 用于 SQL 查询）
      * <p>
      * 消息模板按 2026 市场设计美学规范：
      * 结构化标题 → 表格数据 → 关键指标加粗 → 分割线 → 引导追问

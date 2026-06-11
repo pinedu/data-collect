@@ -58,7 +58,7 @@ public class SchemaDescriber {
                         new FieldDesc("team_id", "班组ID", FieldLevel.safe),
                         new FieldDesc("team_name", "班组名称", FieldLevel.safe),
                         new FieldDesc("work_type", "工种", FieldLevel.safe),
-                        new FieldDesc("job_status", "在岗状态", FieldLevel.safe),
+                        new FieldDesc("job_status", "在职状态(在职、离职)", FieldLevel.safe),
                         new FieldDesc("bank_card_no", "银行卡号", FieldLevel.sensitive),
                         new FieldDesc("bank_name", "银行名称", FieldLevel.sensitive),
                         new FieldDesc("register_time", "入场时间", FieldLevel.safe),
@@ -120,6 +120,63 @@ public class SchemaDescriber {
                         new FieldDesc("bank_card_no", "银行卡号", FieldLevel.sensitive),
                         new FieldDesc("source_project_num", "来源项目编号", FieldLevel.safe)
                 )));
+
+        SCHEMA.put("di_project_warning_indicators", new TableDesc("di_project_warning_indicators", "项目6个百分百预警指标",
+                List.of(
+                        new FieldDesc("source_project_num", "项目编号（主键）", FieldLevel.safe),
+                        new FieldDesc("project_name", "项目名称", FieldLevel.safe),
+                        new FieldDesc("date_month", "统计月份", FieldLevel.safe),
+                        new FieldDesc("is_store_wage_deposit", "是否存储工资保证金（是/否）", FieldLevel.safe),
+                        new FieldDesc("deposit_type", "保证金类型", FieldLevel.safe),
+                        new FieldDesc("deposit_amount", "存储金额（万元）", FieldLevel.safe),
+                        new FieldDesc("deposit_status", "保证金状态", FieldLevel.safe),
+                        new FieldDesc("is_sign_contract", "是否签订劳动合同（是/否）", FieldLevel.safe),
+                        new FieldDesc("sign_contract_num", "合同签订人数", FieldLevel.safe),
+                        new FieldDesc("on_job_num", "在职人数", FieldLevel.safe),
+                        new FieldDesc("is_real_name_attendance", "是否实名制考勤（是/否）", FieldLevel.safe),
+                        new FieldDesc("current_day_attend_person_num", "当日考勤人数", FieldLevel.safe),
+                        new FieldDesc("on_duty_person_num", "在岗人数", FieldLevel.safe),
+                        new FieldDesc("pay_and_attend_num", "发放工资且有考勤人数", FieldLevel.safe),
+                        new FieldDesc("no_attend_num", "无考勤人数", FieldLevel.safe),
+                        new FieldDesc("no_contract_attend_num", "无合同考勤人数", FieldLevel.safe),
+                        new FieldDesc("is_split_appropriation", "是否分账拨付（是/否）", FieldLevel.safe),
+                        new FieldDesc("is_agent_payment", "银行代发状态（是/否/预警）", FieldLevel.safe),
+                        new FieldDesc("last_month_pay_num", "上月发放工资人数", FieldLevel.safe),
+                        new FieldDesc("avg_salary_amount", "上月发放人均工资", FieldLevel.safe),
+                        new FieldDesc("is_exit_settlement", "是否离场结算（是/否）", FieldLevel.safe),
+                        new FieldDesc("exit_with_settlement_num", "离场结算人员数", FieldLevel.safe),
+                        new FieldDesc("exit_with_no_settlement_num", "离场未结算人员数", FieldLevel.safe),
+                        new FieldDesc("is_open_special_account", "是否开设专户（是/否）", FieldLevel.safe),
+                        new FieldDesc("account_balance", "专户余额", FieldLevel.safe),
+                        new FieldDesc("complaint_num", "投诉数量", FieldLevel.safe),
+                        new FieldDesc("objection_nums", "异议数量", FieldLevel.safe)
+                )));
+
+        SCHEMA.put("di_project_monthly_salary_attendance_stats", new TableDesc("di_project_monthly_salary_attendance_stats", "项目月份工资考勤统计",
+                List.of(
+                        new FieldDesc("source_project_num", "来源项目编号", FieldLevel.safe),
+                        new FieldDesc("project_name", "项目名称", FieldLevel.safe),
+                        new FieldDesc("which_year", "年份", FieldLevel.safe),
+                        new FieldDesc("which_month", "月份", FieldLevel.safe),
+                        new FieldDesc("pay_type", "发放形式（线上代发/线下代发）", FieldLevel.safe),
+                        new FieldDesc("pay_amount", "发放金额", FieldLevel.safe),
+                        new FieldDesc("pay_person_num", "发放人数", FieldLevel.safe),
+                        new FieldDesc("attend_times", "考勤次数", FieldLevel.safe),
+                        new FieldDesc("attend_person_num", "考勤人数", FieldLevel.safe),
+                        new FieldDesc("salary_attend_num", "有工资有考勤人数", FieldLevel.safe),
+                        new FieldDesc("attend_no_salary_num", "有考勤无工资人数", FieldLevel.safe),
+                        new FieldDesc("salary_no_attend_num", "有工资无考勤人数", FieldLevel.safe),
+                        new FieldDesc("stat_month", "统计月份（YYYY-MM，生成列）", FieldLevel.safe)
+                )));
+
+        SCHEMA.put("di_project_salary_attendance_detail", new TableDesc("di_project_salary_attendance_detail", "项目工资考勤统计明细",
+                List.of(
+                        new FieldDesc("source_project_num", "来源项目编号", FieldLevel.safe),
+                        new FieldDesc("date_month", "统计月份（YYYY-MM）", FieldLevel.safe),
+                        new FieldDesc("team_name", "班组名称", FieldLevel.safe),
+                        new FieldDesc("person_name", "人员姓名", FieldLevel.safe),
+                        new FieldDesc("att_day_num", "考勤天数", FieldLevel.safe)
+                )));
     }
 
     /**
@@ -150,35 +207,73 @@ public class SchemaDescriber {
     }
 
     /**
-     * 生成 Text-to-SQL Prompt 用的 Schema 文本
+     * 生成精简版 Schema 文本（仅表名摘要，节省 token）
+     * <p>
+     * 字段详情通过 describeTable 工具按需获取，避免每轮对话携带全量 Schema。
      */
     public static String buildSchemaPrompt() {
         StringBuilder sb = new StringBuilder();
-        sb.append("以下是数据库表结构，请根据用户问题生成SQL查询语句。\n\n");
+        sb.append("以下是可用的数据库表，请根据用户问题生成SQL查询。\n");
+        sb.append("需要某张表的字段详情时，先调用 describeTable(表名) 工具获取。\n\n");
 
+        sb.append("可用表:\n");
         for (TableDesc table : getSchema().values()) {
-            sb.append("表名: ").append(table.table()).append(" (").append(table.comment()).append(")\n");
-            sb.append("安全字段（可查询）:\n");
-            for (FieldDesc f : table.fields()) {
-                if (f.level() == FieldLevel.safe) {
-                    sb.append("  - ").append(f.column()).append(": ").append(f.comment()).append("\n");
-                }
-            }
-            sb.append("\n");
+            sb.append("- ").append(table.table()).append(": ").append(table.comment()).append("\n");
         }
 
-        sb.append("表关系: di_project.source_project_num = di_person.source_project_num\n");
-        sb.append("        di_person.team_id = di_team.team_id\n");
-        sb.append("        di_person.person_id = di_attendance.person_id\n");
-        sb.append("        di_team.team_id = di_payroll.team_id\n");
+        sb.append("\n表关系:\n");
+        sb.append("- 所有表通过 source_project_num 关联 di_project\n");
+        sb.append("- di_person.team_id = di_team.team_id\n");
+        sb.append("- di_person.person_id = di_attendance.person_id\n");
+        sb.append("- di_team.team_id = di_payroll.team_id\n");
+
         sb.append("\nSQL规则:\n");
-        sb.append("1. 只能 SELECT 安全字段，禁止包含敏感字段\n");
+        sb.append("1. 只能 SELECT 安全字段，禁止敏感字段\n");
         sb.append("2. 必须加 LIMIT 20\n");
-        sb.append("3. 只生成 SELECT 语句，禁止 INSERT/UPDATE/DELETE/DROP\n");
+        sb.append("3. 只生成 SELECT，禁止 INSERT/UPDATE/DELETE/DROP\n");
         sb.append("4. 优先使用 COUNT/SUM/AVG 聚合查询\n");
-        sb.append("5. 【强制】涉及项目数据查询时，必须先用 listProjects 工具获取项目清单，确认精确的项目名称和 source_project_num 后再生成 SQL\n");
-        sb.append("6. 【强制】禁止在 SQL 中直接硬编码用户输入的项目名称，必须通过工具解析后的精确名称查询\n");
-        sb.append("7. 【强制】涉及人员/班组/考勤/工资等数据时，必须通过 source_project_num 关联项目，禁止全表查询\n");
+        sb.append("5. 【强制】涉及项目数据时，必须先用 listProjects 工具获取项目清单，确认 source_project_num\n");
+        sb.append("6. 【强制】禁止硬编码用户输入的项目名称\n");
+        sb.append("7. 【强制】人员/班组/考勤/工资数据必须通过 source_project_num 关联项目\n");
+        sb.append("8. 生成 SQL 前，必须先用 describeTable 工具获取目标表的字段详情\n");
+
+        return sb.toString();
+    }
+
+    /**
+     * 按需生成指定表的字段详情文本（由 describeTable 工具调用）
+     *
+     * @param tableName 表名
+     * @return 字段详情文本，表不存在时返回提示
+     */
+    public static String buildTableDetail(String tableName) {
+        if (tableName == null || tableName.isBlank()) {
+            return "请提供表名";
+        }
+        TableDesc table = getSchema().get(tableName.trim().toLowerCase());
+        if (table == null) {
+            return "表 " + tableName + " 不存在，可用表: " + String.join(", ", getSchema().keySet());
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("表: ").append(table.table()).append(" (").append(table.comment()).append(")\n\n");
+        sb.append("安全字段（可用于 SELECT）:\n");
+        for (FieldDesc f : table.fields()) {
+            if (f.level() == FieldLevel.safe) {
+                sb.append("  - ").append(f.column()).append(": ").append(f.comment()).append("\n");
+            }
+        }
+        sb.append("\n敏感字段（禁止出现在 SELECT 中）:\n");
+        boolean hasSensitive = false;
+        for (FieldDesc f : table.fields()) {
+            if (f.level() == FieldLevel.sensitive) {
+                sb.append("  - ").append(f.column()).append("\n");
+                hasSensitive = true;
+            }
+        }
+        if (!hasSensitive) {
+            sb.append("  （无）\n");
+        }
 
         return sb.toString();
     }

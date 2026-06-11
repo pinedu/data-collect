@@ -122,7 +122,7 @@ public class TeamSyncJob extends AbstractSyncJob {
 
             // 批量插入或更新
             if (!teamBatch.isEmpty()) {
-                int batchSuccess = batchInsertService.batchInsertOrUpdate(teamBatch, teamService, 500);
+                int batchSuccess = batchInsertService.batchInsertOrUpdate(teamBatch, teamService, 200);
                 successCount += batchSuccess;
                 failCount += (teamBatch.size() - batchSuccess);
                 // 批量发布变更事件

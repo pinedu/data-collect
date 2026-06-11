@@ -2,6 +2,7 @@ package com.renhe.di.store.service.impl;
 
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.renhe.di.store.annotation.GeneratedColumn;
 import com.renhe.di.store.annotation.UpsertKeys;
@@ -60,7 +61,7 @@ public class BatchInsertServiceImpl implements BatchInsertService {
                 successCount += batch.size();
                 log.debug("第{}批UPSERT成功，影响行数：{}", batchNum, rows);
             } catch (Exception e) {
-                log.error("第{}批UPSERT异常", batchNum, e);
+                log.error("第{}批UPSERT异常（本批{}条数据全部失败）", batchNum, batch.size(), e);
             }
         }
 
@@ -76,6 +77,9 @@ public class BatchInsertServiceImpl implements BatchInsertService {
 
         Class<?> entityClass = batch.get(0).getClass();
 
+        // 0. 自动填充主键 ID（原始 SQL 绕过了 MyBatis-Plus 的 @TableId 自动生成）
+        ensureIdsPopulated(batch, entityClass);
+
         // 1. 获取表名
         String tableName = getTableName(entityClass);
 
@@ -90,6 +94,47 @@ public class BatchInsertServiceImpl implements BatchInsertService {
             UpsertMapper<T> mapper = sqlSession.getMapper(UpsertMapper.class);
             return mapper.upsertBatch(batch, tableName, uniqueColumns, columns);
         }
+    }
+
+    /**
+     * 确保实体主键 ID 不为 null。
+     * <p>
+     * 原始 SQL 绕过了 MyBatis-Plus 的 @TableId 自动 ID 生成，
+     * 如果 id 为 null，INSERT 会因主键 NOT NULL 约束而整批失败。
+     * 这里用雪花算法补全缺失的 ID。
+     */
+    private <T> void ensureIdsPopulated(List<T> batch, Class<?> entityClass) {
+        Field idField = findIdField(entityClass);
+        if (idField == null) {
+            return; // 无 @TableId 字段，跳过
+        }
+        idField.setAccessible(true);
+        for (T entity : batch) {
+            try {
+                Object currentId = idField.get(entity);
+                if (currentId == null || (currentId instanceof String && ((String) currentId).isEmpty())) {
+                    idField.set(entity, IdWorker.getIdStr());
+                }
+            } catch (IllegalAccessException e) {
+                log.warn("无法设置实体主键ID: {}", e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * 在类继承链中查找带 @TableId 注解的字段
+     */
+    private Field findIdField(Class<?> clazz) {
+        Class<?> current = clazz;
+        while (current != null && current != Object.class) {
+            for (Field field : current.getDeclaredFields()) {
+                if (field.isAnnotationPresent(com.baomidou.mybatisplus.annotation.TableId.class)) {
+                    return field;
+                }
+            }
+            current = current.getSuperclass();
+        }
+        return null;
     }
 
     /**

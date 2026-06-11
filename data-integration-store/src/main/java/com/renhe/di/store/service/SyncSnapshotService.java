@@ -51,6 +51,31 @@ public interface SyncSnapshotService extends IService<DiSyncSnapshot> {
                            java.time.LocalDateTime monthSyncDate, int monthThirdPartyTotal);
 
     /**
+     * 保存页码级采集检查点（用于断点续传）
+     * 每页采集成功后调用，记录已采集到的最后一页
+     *
+     * @param sourceProjectNum    项目编号
+     * @param dataType            数据类型
+     * @param monthId             月份标识
+     * @param lastCollectedPage   已成功采集的最后一页页码（1-based）
+     * @param monthTotalPages     该月份总页数
+     * @param monthThirdPartyTotal 该月份第三方数据总量
+     */
+    void savePageCheckpoint(String sourceProjectNum, String dataType, String monthId,
+                           int lastCollectedPage, int monthTotalPages, int monthThirdPartyTotal);
+
+    /**
+     * 标记月份采集完成（所有页均已采集入库）
+     *
+     * @param sourceProjectNum    项目编号
+     * @param dataType            数据类型
+     * @param monthId             月份标识
+     * @param monthThirdPartyTotal 该月份第三方数据总量
+     */
+    void markMonthComplete(String sourceProjectNum, String dataType, String monthId,
+                           int monthThirdPartyTotal);
+
+    /**
      * 查询指定项目+数据类型的最新全局快照（monthId 为 null）
      *
      * @param sourceProjectNum 项目编号
