@@ -72,6 +72,9 @@ public class WarningIndicatorsSyncJob extends AbstractSyncJob {
             return SyncResult.of(1, 1, 0, 0);
         } catch (Exception e) {
             log.error("项目【{}】预警指标同步失败: {}", projectNum, e.getMessage(), e);
+            if (handleTokenExpired(e, account)) {
+                return SyncResult.of(1, 0, 1, 0);
+            }
             if (isAntiCrawlerMessage(e)) {
                 return SyncResult.antiCrawler(1, 0, 1, 0);
             }

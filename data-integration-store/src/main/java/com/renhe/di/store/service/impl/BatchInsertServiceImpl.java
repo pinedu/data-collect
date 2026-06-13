@@ -92,7 +92,9 @@ public class BatchInsertServiceImpl implements BatchInsertService {
         // 4. 获取 UpsertMapper 并执行（try-with-resources 确保连接归还）
         try (SqlSession sqlSession = sqlSessionFactory.openSession()) {
             UpsertMapper<T> mapper = sqlSession.getMapper(UpsertMapper.class);
-            return mapper.upsertBatch(batch, tableName, uniqueColumns, columns);
+            int rows = mapper.upsertBatch(batch, tableName, uniqueColumns, columns);
+            sqlSession.commit();
+            return rows;
         }
     }
 

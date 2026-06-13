@@ -1,9 +1,9 @@
 package com.renhe.di.collect.api;
 
-import cn.hutool.json.JSONObject;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -26,6 +26,14 @@ public class TokenManager {
     @Autowired
     private StringRedisTemplate redisTemplate;
 
+    /**
+     * 延迟注入 ThirdPartyApiClient，避免循环依赖
+     * ThirdPartyApiClient → TokenManager → (Lazy) ThirdPartyApiClient
+     */
+    @Autowired
+    @Lazy
+    private ThirdPartyApiClient apiClient;
+
     @Value("${collect.token.ttl-hours:12}")
     private long tokenTtlHours;
 
@@ -44,11 +52,11 @@ public class TokenManager {
         String token = redisTemplate.opsForValue().get(tokenKey);
 
         if (StringUtils.hasLength(token)) {
-            // 检查是否需要续期
+            // 检查是否需要续期（仅延长Redis TTL，真正的API验证由TokenRefreshJob负责）
             Long ttl = redisTemplate.getExpire(tokenKey, TimeUnit.HOURS);
             if (ttl != null && ttl < renewThresholdHours) {
-                log.info("账号【{}】Token剩余有效期{}小时，执行续期", account, ttl);
-                validateAndExtend(account, password);
+                log.info("账号【{}】Token剩余有效期{}小时，延长TTL", account, ttl);
+                redisTemplate.expire(tokenKey, tokenTtlHours, TimeUnit.HOURS);
             }
             return token;
         }
@@ -88,31 +96,54 @@ public class TokenManager {
     }
 
     /**
-     * 验证Token有效性并续期
-     *
-     * @param account  账号
-     * @param password 密码
-     * @return 是否续期成功
+     * Token验证结果枚举
      */
-    public boolean validateAndExtend(String account, String password) {
+    public enum ValidateResult {
+        /** Token有效，已续期 */
+        VALID,
+        /** Token已过期（401登录过期），需移除 */
+        EXPIRED,
+        /** 临时错误（风控/网络异常等），保留Token等待自动恢复 */
+        TEMP_ERROR
+    }
+
+    /**
+     * 验证Token有效性并续期（实际调用第三方API验证）
+     * <p>
+     * 通过调用项目详情接口验证Token是否仍然有效：
+     * - 接口成功：续期Redis TTL，返回 VALID
+     * - 接口返回401登录过期：返回 EXPIRED，调用方应移除Token
+     * - 其他错误（风控封号/网络异常等）：返回 TEMP_ERROR，保留Token等待自动恢复
+     *
+     * @param account   账号
+     * @param password  密码
+     * @param projectId 用于验证的项目ID（sourceProjectNum）
+     * @return 验证结果
+     */
+    public ValidateResult validateAndExtend(String account, String password, String projectId) {
         String tokenKey = TOKEN_KEY_PREFIX + account;
         String token = redisTemplate.opsForValue().get(tokenKey);
 
         if (!StringUtils.hasLength(token)) {
             log.warn("账号【{}】Token不存在，无法续期", account);
-            return false;
+            return ValidateResult.EXPIRED;
         }
 
         try {
-            // 调用项目详情接口验证Token有效性
-            // 如果接口返回成功，说明Token有效，续期
-            // 这里简化处理：只要能从Redis读到Token就认为有效，直接续期
+            // 实际调用第三方API验证Token有效性
+            apiClient.getProjectData(projectId, account, password);
+            // 接口成功，Token有效，续期
             redisTemplate.expire(tokenKey, tokenTtlHours, TimeUnit.HOURS);
-            log.info("账号【{}】Token续期成功，延长{}小时", account, tokenTtlHours);
-            return true;
+            log.info("账号【{}】Token验证通过，已续期{}小时", account, tokenTtlHours);
+            return ValidateResult.VALID;
+        } catch (TokenExpiredException e) {
+            // 明确的401登录过期，Token需移除
+            log.warn("账号【{}】Token已过期（401登录过期）: {}", account, e.getMessage());
+            return ValidateResult.EXPIRED;
         } catch (Exception e) {
-            log.error("账号【{}】Token续期异常", account, e);
-            return false;
+            // 其他所有错误（风控封号、网络异常、系统异常等），保留Token
+            log.warn("账号【{}】Token验证遇到临时错误，保留Token等待恢复: {}", account, e.getMessage());
+            return ValidateResult.TEMP_ERROR;
         }
     }
 

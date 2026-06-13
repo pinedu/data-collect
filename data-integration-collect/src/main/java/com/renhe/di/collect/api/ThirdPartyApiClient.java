@@ -84,6 +84,7 @@ public class ThirdPartyApiClient {
 
     /**
      * 获取项目详情
+     * 使用统一的 parseResponse 解析，确保 401登录过期等异常能正确抛出
      */
     public JSONObject getProjectData(String projectId, String account, String password) {
         String timestamp = System.currentTimeMillis() + "";
@@ -99,19 +100,7 @@ public class ThirdPartyApiClient {
                 .timeout(30000)
                 .execute().body();
 
-        if (!JSONUtil.isTypeJSON(body)) {
-            log.warn("项目详情返回非JSON: {}", body);
-            return null;
-        }
-        JSONObject result = JSONUtil.parseObj(body);
-        Integer code = result.getInt("code");
-        Integer success = result.getInt("success");
-        if (success!=1) {
-            String msg = result.getStr("message", result.getStr("msg", "未知错误"));
-            log.warn("项目详情返回错误: code={}, msg={}", code, msg);
-            return null;
-        }
-        return result.getJSONObject("data");
+        return parseResponse(body, "项目详情");
     }
 
     /**
@@ -420,11 +409,13 @@ public class ThirdPartyApiClient {
 
     /**
      * 解析第三方API响应，遇到错误时抛出异常（供 RateLimitStrategy 重试）
+     * 当 code=401 且 msg 含 "登录过期" 时抛出 TokenExpiredException，调用方可据此移除Token
      *
      * @param body 响应体
      * @param desc 接口描述（用于日志）
      * @return data 节点
-     * @throws RuntimeException 当code != 0 && code != 200时抛出
+     * @throws TokenExpiredException 当 code=401 且 msg 含 "登录过期" 时抛出
+     * @throws RuntimeException 其他错误时抛出
      */
     private JSONObject parseResponse(String body, String desc) {
         if (!JSONUtil.isTypeJSON(body)) {
@@ -439,6 +430,13 @@ public class ThirdPartyApiClient {
             String msg = result.getStr("message", result.getStr("msg", "未知错误"));
             // 构建完整错误信息，确保 "系统异常" 等关键词可以被 RateLimitStrategy 识别
             String errMsg = String.format("%s返回错误: code=%d, msg=%s", desc, code, msg);
+
+            // code=401 + msg含"登录过期" → Token已失效，需移除
+            if (code != null && code == 401 && msg != null && msg.contains("登录过期")) {
+                log.warn("Token已过期（401登录过期），需移除: {}", errMsg);
+                throw new TokenExpiredException(errMsg);
+            }
+
             log.warn(errMsg);
             throw new RuntimeException(errMsg);
         }

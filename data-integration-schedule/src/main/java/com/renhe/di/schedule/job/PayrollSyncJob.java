@@ -146,6 +146,9 @@ public class PayrollSyncJob extends AbstractSyncJob {
             log.info("项目【{}】工资全量总量：{}", projectNum, globalThirdPartyTotal);
         } catch (Exception e) {
             log.error("项目【{}】工资探针失败: {}", projectNum, e.getMessage());
+            if (handleTokenExpired(e, account)) {
+                return SyncResult.of(0, 0, 0, 0);
+            }
             if (isAntiCrawlerMessage(e)) {
                 return SyncResult.antiCrawler(0, 0, 0, 0);
             }
@@ -265,6 +268,9 @@ public class PayrollSyncJob extends AbstractSyncJob {
                     }
                 } catch (Exception e) {
                     log.error("项目【{}】月份【{}】主表采集失败: {}", projectNum, month, e.getMessage());
+                    if (handleTokenExpired(e, account)) {
+                        break;
+                    }
                     if (isAntiCrawlerMessage(e)) {
                         antiCrawlerTriggered = true;
                         break;
@@ -364,6 +370,10 @@ public class PayrollSyncJob extends AbstractSyncJob {
             } catch (Exception e) {
                 log.error("项目【{}】月份【{}】salaryId={} 明细探针失败: {}",
                         projectNum, month, salaryId, e.getMessage());
+                if (handleTokenExpired(e, account)) {
+                    antiCrawler = true;
+                    break;
+                }
                 if (isAntiCrawlerMessage(e)) {
                     antiCrawler = true;
                     break;

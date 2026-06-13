@@ -48,14 +48,12 @@ public class SyncTriggerController {
     // ==================== 流水线触发 ====================
 
     /**
-     * 触发全量同步流水线（项目->班组->人员->工资->考勤）
+     * 流水线状态查询（项目独立循环模型已自动运行，无需手动触发）
      */
     @GetMapping("/pipeline/full")
-    public Result<Void> triggerFullPipeline() {
-        log.info("手动触发全量同步流水线");
-        // 异步执行，避免HTTP超时
-        new Thread(() -> projectDataSyncPipeline.runFullSyncPipeline()).start();
-        return Result.success();
+    public Result<String> triggerFullPipeline() {
+        log.info("查询流水线状态");
+        return Result.success("流水线已自动运行，每个项目独立循环，无需手动触发");
     }
 
     // ==================== 单类型全量同步 ====================

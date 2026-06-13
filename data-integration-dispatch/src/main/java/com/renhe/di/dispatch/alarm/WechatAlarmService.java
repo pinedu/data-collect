@@ -43,6 +43,10 @@ public class WechatAlarmService {
     @Value("${alarm.wechat.max-per-day:2000}")
     private int maxPerDay;
 
+
+    @Value("${alarm.report.base-url}")
+    private String reportBaseUrl;
+
     private static final ReentrantLock RATE_LOCK = new ReentrantLock();
     private static long windowMinute = -1;
     private static int minuteCount = 0;
@@ -308,14 +312,15 @@ public class WechatAlarmService {
     /**
      * 发送同步汇总报告
      */
-    public void sendSyncReport(String dataType, int totalProjects, int successProjects,
+    public void sendSyncReport(String dataType, String reportId, int totalProjects, int successProjects,
                                 int totalCount, int successCount, int failCount) {
         if (!enabled) {
             return;
         }
 
         String title = "数据同步日报";
-        String content = String.format(
+        StringBuilder content = new StringBuilder();
+        content.append(String.format(
                 "- **同步类型**：%s\n" +
                         "- **项目总数**：%d\n" +
                         "- **成功项目**：%d\n" +
@@ -328,8 +333,11 @@ public class WechatAlarmService {
                 totalCount, successCount, failCount,
                 totalCount > 0 ? (successCount * 100.0 / totalCount) : 0,
                 LocalDateTime.now()
-        );
+        ));
+        // 从配置文件读取外网可访问的真实地址，附带报告链接
+        String reportUrl = reportBaseUrl + "/api/sync/tokenReport/" + reportId;
+        content.append("\n[👉 点击查看详细报告明细](").append(reportUrl).append(")");
 
-        sendMarkdown(title, content);
+        sendMarkdown(title, content.toString());
     }
 }

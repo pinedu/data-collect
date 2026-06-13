@@ -13,7 +13,6 @@ import com.renhe.di.store.service.BatchInsertService;
 import com.renhe.di.store.service.DiAttendanceService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
@@ -25,7 +24,8 @@ import java.util.Set;
 
 /**
  * 考勤增量同步任务
- * 每小时执行，同步最近变更数据
+ * 由 Pipeline 统一编排，不再独立定时调度
+ * 保留手动触发入口（scheduledExecute）供按需调用
  */
 @Slf4j
 @Component
@@ -52,10 +52,9 @@ public class AttendanceIncrementalSyncJob extends AbstractSyncJob {
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     /**
-     * 每小时执行考勤增量同步（独立调度）
-     * 考勤增量不依赖其他数据，可独立运行
+     * 手动触发考勤增量同步（不再自动定时执行）
+     * 由 ProjectDataSyncPipeline 统一编排，避免与全量同步冲突
      */
-    @Scheduled(cron = "0 0 * * * ?")
     public void scheduledExecute() throws Exception {
         super.execute();
     }
@@ -168,6 +167,9 @@ public class AttendanceIncrementalSyncJob extends AbstractSyncJob {
 
         } catch (Exception e) {
             log.error("项目【{}】考勤增量同步失败: {}", projectNum, e.getMessage(), e);
+            if (handleTokenExpired(e, account)) {
+                return SyncResult.of(totalCount, successCount, failCount, skipCount);
+            }
             failCount++;
         }
 

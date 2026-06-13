@@ -29,6 +29,10 @@ public class SyncResult {
     @Builder.Default
     private boolean antiCrawlerTriggered = false;
 
+    /** Token 是否已过期（401登录过期） */
+    @Builder.Default
+    private boolean tokenExpired = false;
+
     public static SyncResult empty() {
         return SyncResult.builder().build();
     }
@@ -60,6 +64,13 @@ public class SyncResult {
                 .failCount(fail)
                 .skipCount(skip)
                 .antiCrawlerTriggered(true)
+                .build();
+    }
+
+    /** 创建 Token 过期结果 */
+    public static SyncResult tokenExpired() {
+        return SyncResult.builder()
+                .tokenExpired(true)
                 .build();
     }
 }

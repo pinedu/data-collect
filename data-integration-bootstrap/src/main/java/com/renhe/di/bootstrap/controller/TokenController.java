@@ -1,11 +1,10 @@
 package com.renhe.di.bootstrap.controller;
-
 import cn.hutool.core.date.DatePattern;
 import cn.hutool.core.date.DateUtil;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
-import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.renhe.di.collect.api.ThirdPartyApiClient;
+import com.renhe.di.collect.api.TokenExpiredException;
 import com.renhe.di.collect.api.TokenManager;
 import com.renhe.di.core.model.Result;
 import com.renhe.di.dispatch.alarm.WechatAlarmService;
@@ -17,19 +16,14 @@ import com.renhe.di.store.service.DiProjectService;
 import com.renhe.di.store.service.ToolProjectService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.MediaType;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
-
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
-import java.util.Objects;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Token管理Controller
@@ -41,10 +35,6 @@ import java.util.concurrent.TimeUnit;
 public class TokenController {
 
     private static final String LOGIN_SID_KEY = "login:sid:";
-    private static final String CACHE_CATEGORY_TYPE_KEY = "cache:category:type";
-    private static final String CACHE_PROJECT_STATUS_KEY = "cache:project:status";
-    private static final String CACHE_PROJECT_SUB_DEPARTMENT_KEY = "cache:project:subDepartment";
-    private static final String CACHE_PROJECT_SUB_DEPARTMENT_CHILD_KEY = "cache:project:subDepartment:child";
 
     @Autowired
     private TokenManager tokenManager;
@@ -66,9 +56,6 @@ public class TokenController {
 
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
-
-    @Value("${alarm.wechat.webhook:}")
-    private String reportBaseUrl;
 
     /**
      * 接收扫码登录结果（批量）
@@ -144,17 +131,29 @@ public class TokenController {
 
         // 3. 调用第三方API验证项目信息
         JSONObject projectData = null;
+        boolean tokenExpired = false;
         try {
             projectData = thirdPartyApiClient.getProjectData(projectId, username, config.getPassword());
+        } catch (TokenExpiredException e) {
+            // 401登录过期，需要移除Token
+            tokenExpired = true;
+            log.warn("项目【{}】Token已过期（401登录过期）: {}", projectId, e.getMessage());
         } catch (Exception e) {
-            log.warn("获取项目详情异常: projectId={}, error={}", projectId, e.getMessage());
+            // 其他错误（风控/网络异常等），保留Token
+            log.warn("获取项目详情异常（保留Token）: projectId={}, error={}", projectId, e.getMessage());
+        }
+
+        if (tokenExpired) {
+            // 仅401登录过期才移除Token
+            tokenManager.removeToken(username);
+            log.warn("项目【{}】Token已过期，已移除Token", projectId);
+            throw new RuntimeException("Token已过期（401登录过期），Token已移除，请重新扫码");
         }
 
         if (projectData == null) {
-            // 验证失败，移除Token
-            tokenManager.removeToken(username);
-            log.warn("项目【{}】获取项目信息失败，已移除Token", projectId);
-            throw new RuntimeException("项目信息获取失败，Token已移除");
+            // 临时错误，不移除Token
+            log.warn("项目【{}】获取项目信息失败（临时错误，保留Token）", projectId);
+            throw new RuntimeException("项目信息获取失败（临时错误），Token已保留，请稍后重试");
         }
 
         // 4. 更新/保存项目配置
@@ -215,7 +214,14 @@ public class TokenController {
             project.setProjectNum(projectData.getStr("id"));
             project.setProjectName(projectData.getStr("fullName"));
             project.setRecordNumber(projectData.getStr("filingNo"));
-            project.setAreaCode(projectData.getStr("areaCode") + "00");
+            String diAreaCode = projectData.getStr("areaCode");
+            if (StringUtils.hasLength(diAreaCode)) {
+                if (diAreaCode.length() > 6) {
+                    project.setAreaCode(diAreaCode.substring(0, 6));
+                } else {
+                    project.setAreaCode(String.format("%-6s", diAreaCode).replace(' ', '0'));
+                }
+            }
             project.setProjectStatus(projectData.getStr("projectState"));
 
             java.math.BigDecimal lon = projectData.getBigDecimal("longitude");
@@ -255,7 +261,8 @@ public class TokenController {
             toolProject.setProjectNum(sourceProjectNum);
             toolProject.setProjectName(projectData.getStr("fullName"));
             toolProject.setRecordNumber(projectData.getStr("filingNo"));
-            toolProject.setAreaCode(projectData.getStr("areaCode") + "00");
+            String areaCode = projectData.getStr("areaCode");
+            toolProject.setAreaCode(areaCode);
             toolProject.setProjectDetailedAddress(projectData.getStr("location"));
             toolProject.setLon(projectData.getStr("longitude", ""));
             toolProject.setLat(projectData.getStr("latitude", ""));
@@ -301,9 +308,17 @@ public class TokenController {
         if (reportData.containsKey("success")) {
             reportData.getJSONArray("success").forEach(item -> success.add(item.toString()));
         }
-        List<String> failedInvalid = new ArrayList<>();
-        if (reportData.containsKey("failedInvalid")) {
-            reportData.getJSONArray("failedInvalid").forEach(item -> failedInvalid.add(item.toString()));
+        List<String> expired = new ArrayList<>();
+        if (reportData.containsKey("expired")) {
+            reportData.getJSONArray("expired").forEach(item -> expired.add(item.toString()));
+        }
+        // 兼容旧格式：旧报告使用 failedInvalid 字段
+        if (expired.isEmpty() && reportData.containsKey("failedInvalid")) {
+            reportData.getJSONArray("failedInvalid").forEach(item -> expired.add(item.toString()));
+        }
+        List<String> tempError = new ArrayList<>();
+        if (reportData.containsKey("tempError")) {
+            reportData.getJSONArray("tempError").forEach(item -> tempError.add(item.toString()));
         }
         List<String> failedNoRecord = new ArrayList<>();
         if (reportData.containsKey("failedNoRecord")) {
@@ -336,13 +351,18 @@ public class TokenController {
         html.append("<div class='time'>生成时间：").append(time).append("</div>");
 
         html.append("<div class='card danger'>");
+        html.append("<h3>❌ Token已过期-已移除 (").append(expired.size()).append(" 个)</h3>");
+        buildHtmlList(html, expired);
+        html.append("</div>");
+
+        html.append("<div class='card danger'>");
         html.append("<h3>❌ 扫码记录不存在 (").append(failedNoRecord.size()).append(" 个)</h3>");
         buildHtmlList(html, failedNoRecord);
         html.append("</div>");
 
         html.append("<div class='card warning'>");
-        html.append("<h3>⚠️ 基础信息获取失败/失效 (").append(failedInvalid.size()).append(" 个)</h3>");
-        buildHtmlList(html, failedInvalid);
+        html.append("<h3>⚠️ 临时错误-保留Token等待恢复 (").append(tempError.size()).append(" 个)</h3>");
+        buildHtmlList(html, tempError);
         html.append("</div>");
 
         html.append("<div class='card success'>");

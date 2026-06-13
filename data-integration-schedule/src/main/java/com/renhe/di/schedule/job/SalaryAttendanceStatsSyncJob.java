@@ -222,6 +222,9 @@ public class SalaryAttendanceStatsSyncJob extends AbstractSyncJob {
 
             } catch (Exception e) {
                 log.error("项目【{}】年份【{}】工资考勤统计同步失败: {}", projectNum, yearStr, e.getMessage(), e);
+                if (handleTokenExpired(e, account)) {
+                    return SyncResult.antiCrawler(totalCount, successCount, failCount, skipCount);
+                }
                 if (isAntiCrawlerMessage(e)) {
                     return SyncResult.antiCrawler(totalCount, successCount, failCount, skipCount);
                 }
@@ -274,6 +277,9 @@ public class SalaryAttendanceStatsSyncJob extends AbstractSyncJob {
             return 0;
         } catch (Exception e) {
             log.error("项目【{}】年份【{}】探针失败: {}", projectNum, year, e.getMessage());
+            if (handleTokenExpired(e, account)) {
+                return -1;
+            }
             if (isAntiCrawlerMessage(e)) {
                 return -1;
             }

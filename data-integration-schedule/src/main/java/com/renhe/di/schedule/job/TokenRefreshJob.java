@@ -1,5 +1,6 @@
 package com.renhe.di.schedule.job;
 
+import cn.hutool.json.JSONObject;
 import com.renhe.di.collect.api.TokenManager;
 import com.renhe.di.dispatch.alarm.WechatAlarmService;
 import com.renhe.di.store.entity.DiProjectConfig;
@@ -10,12 +11,19 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
  * Token续期定时任务
- * 每6小时执行一次，遍历所有启用项目验证并续期Token
+ * 每20分钟执行一次，遍历所有启用项目通过实际API调用验证并续期Token
+ * <p>
+ * Token移除策略：仅在API明确返回 code=401, msg=登录过期 时才移除Token
+ * 其他错误（风控封号、网络异常等）视为临时性问题，保留Token等待自动恢复
  */
 @Slf4j
 @Component
@@ -33,10 +41,6 @@ public class TokenRefreshJob {
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
 
-    private static final String TOKEN_PROBE_KEY = "token:probe:";
-    private static final int MAX_PROBE_COUNT = 3;
-    private static final int PROBE_EXPIRE_MINUTES = 70;
-
     /**
      * 每20分钟执行一次Token续期
      */
@@ -51,9 +55,13 @@ public class TokenRefreshJob {
         }
 
         int successCount = 0;
-        int failCount = 0;
+        int expiredCount = 0;
+        int tempErrorCount = 0;
         int noTokenCount = 0;
-        int removedCount = 0;
+        List<String> successProjects = new ArrayList<>();
+        List<String> expiredProjects = new ArrayList<>();
+        List<String> tempErrorProjects = new ArrayList<>();
+        List<String> failedNoRecordProjects = new ArrayList<>();
 
         for (DiProjectConfig project : projects) {
             String account = project.getAccount();
@@ -64,93 +72,66 @@ public class TokenRefreshJob {
                 // 检查Token是否存在
                 if (!tokenManager.hasToken(account)) {
                     log.warn("项目【{}】账号【{}】Token不存在，跳过续期", projectName, account);
+                    failedNoRecordProjects.add(projectName);
                     noTokenCount++;
                     continue;
                 }
 
-                // 验证并续期
-                boolean extended = tokenManager.validateAndExtend(account, project.getPassword());
-                if (extended) {
-                    log.info("项目【{}】账号【{}】Token续期成功", projectName, account);
-                    successCount++;
-                    // 续期成功，清除探针计数
-                    clearProbeCount(account);
-                } else {
-                    // 续期失败，进行风控探针
-                    int probeCount = incrementProbeCount(account);
-                    log.warn("项目【{}】账号【{}】Token续期失败，探针次数={}/{}",
-                            projectName, account, probeCount, MAX_PROBE_COUNT);
+                // 实际调用API验证Token有效性
+                TokenManager.ValidateResult result = tokenManager.validateAndExtend(
+                        account, project.getPassword(), sourceProjectNum);
 
-                    if (probeCount >= MAX_PROBE_COUNT) {
-                        // 达到最大探针次数，移除Token
+                switch (result) {
+                    case VALID:
+                        log.info("项目【{}】账号【{}】Token验证通过，已续期", projectName, account);
+                        successProjects.add(projectName);
+                        successCount++;
+                        break;
+
+                    case EXPIRED:
+                        // 明确的401登录过期，移除Token并告警
                         tokenManager.removeToken(account);
-                        clearProbeCount(account);
-                        removedCount++;
-                        log.error("项目【{}】账号【{}】Token续期失败已达{}次，已移除Token",
-                                projectName, account, MAX_PROBE_COUNT);
+                        expiredCount++;
+                        expiredProjects.add(projectName);
+                        log.error("项目【{}】账号【{}】Token已过期（401登录过期），已移除Token", projectName, account);
                         alarmService.sendSyncAlarm(sourceProjectNum, "TOKEN_REFRESH",
-                                "Token续期连续失败" + MAX_PROBE_COUNT + "次，Token已移除，请重新扫码");
-                    } else if (probeCount == MAX_PROBE_COUNT - 1) {
-                        // 倒数第二次发告警提醒
-                        alarmService.sendSyncAlarm(sourceProjectNum, "TOKEN_REFRESH",
-                                "Token续期失败（探针 " + probeCount + "/" + MAX_PROBE_COUNT +
-                                        "），下次失败将移除Token");
-                    }
-                    failCount++;
+                                "Token已过期（401登录过期），Token已移除，请重新扫码");
+                        break;
+
+                    case TEMP_ERROR:
+                        // 临时错误（风控封号/网络异常等），保留Token，不发告警
+                        tempErrorCount++;
+                        tempErrorProjects.add(projectName);
+                        log.warn("项目【{}】账号【{}】Token验证遇到临时错误，保留Token等待自动恢复", projectName, account);
+                        break;
                 }
 
             } catch (Exception e) {
-                log.error("项目【{}】账号【{}】Token续期异常", projectName, account, e);
-                // 异常也纳入探针计数
-                int probeCount = incrementProbeCount(account);
-                log.warn("项目【{}】账号【{}】Token续期异常，探针次数={}/{}",
-                        projectName, account, probeCount, MAX_PROBE_COUNT);
-
-                if (probeCount >= MAX_PROBE_COUNT) {
-                    tokenManager.removeToken(account);
-                    clearProbeCount(account);
-                    removedCount++;
-                    log.error("项目【{}】账号【{}】Token续期异常已达{}次，已移除Token",
-                            projectName, account, MAX_PROBE_COUNT);
-                    alarmService.sendSyncAlarm(sourceProjectNum, "TOKEN_REFRESH",
-                            "Token续期连续异常" + MAX_PROBE_COUNT + "次，Token已移除，请重新扫码");
-                } else if (probeCount == MAX_PROBE_COUNT - 1) {
-                    alarmService.sendSyncAlarm(sourceProjectNum, "TOKEN_REFRESH",
-                            "Token续期异常（探针 " + probeCount + "/" + MAX_PROBE_COUNT +
-                                    "），下次失败将移除Token");
-                }
-                failCount++;
+                // 未预期的异常，视为临时错误，保留Token
+                tempErrorCount++;
+                tempErrorProjects.add(projectName);
+                log.error("项目【{}】账号【{}】Token续期异常，保留Token等待恢复", projectName, account, e);
             }
         }
 
-        log.info("Token续期任务完成：项目总数={}, 成功={}, 失败={}, 无Token={}, 已移除={}",
-                projects.size(), successCount, failCount, noTokenCount, removedCount);
+        log.info("Token续期任务完成：项目总数={}, 成功={}, 已过期移除={}, 临时错误={}, 无Token={}",
+                projects.size(), successCount, expiredCount, tempErrorCount, noTokenCount);
 
-        // 如果有失败项目，发送汇总告警
+        // 如果有过期或临时错误，发送汇总报告
+        int failCount = expiredCount + tempErrorCount;
         if (failCount > 0) {
-            alarmService.sendSyncReport("Token续期", projects.size(), successCount,
+            // 生成报告ID（当天日期），将项目名列表存入Redis供报告页面查询
+            String reportId = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE);
+            JSONObject reportData = new JSONObject();
+            reportData.set("success", successProjects);
+            reportData.set("expired", expiredProjects);
+            reportData.set("tempError", tempErrorProjects);
+            reportData.set("failedNoRecord", failedNoRecordProjects);
+            reportData.set("time", LocalDateTime.now().toString());
+            stringRedisTemplate.opsForValue().set("token:report:" + reportId, reportData.toString(), 7, TimeUnit.DAYS);
+
+            alarmService.sendSyncReport("Token续期", reportId, projects.size(), successCount,
                     projects.size(), successCount, failCount);
         }
-    }
-
-    /**
-     * 增加探针计数，返回当前计数
-     */
-    private int incrementProbeCount(String account) {
-        String key = TOKEN_PROBE_KEY + account;
-        Long count = stringRedisTemplate.opsForValue().increment(key);
-        if (count != null && count == 1) {
-            // 首次设置，70分钟后过期（覆盖3次20分钟周期+缓冲）
-            stringRedisTemplate.expire(key, PROBE_EXPIRE_MINUTES, TimeUnit.MINUTES);
-        }
-        return count != null ? count.intValue() : 1;
-    }
-
-    /**
-     * 清除探针计数
-     */
-    private void clearProbeCount(String account) {
-        String key = TOKEN_PROBE_KEY + account;
-        stringRedisTemplate.delete(key);
     }
 }

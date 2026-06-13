@@ -1,6 +1,8 @@
 package com.renhe.di.schedule.service;
 
+import com.renhe.di.collect.api.AntiCrawlerDetector;
 import com.renhe.di.collect.api.ThirdPartyApiClient;
+import com.renhe.di.collect.api.TokenManager;
 import com.renhe.di.collect.model.CollectContext;
 import com.renhe.di.store.entity.DiAttendance;
 import com.renhe.di.store.entity.DiPayroll;
@@ -37,6 +39,9 @@ public class DataConsistencyChecker {
     @Autowired
     private ThirdPartyApiClient apiClient;
 
+    @Autowired
+    private TokenManager tokenManager;
+
     /**
      * 校验指定项目的考勤数据一致性
      *
@@ -51,16 +56,24 @@ public class DataConsistencyChecker {
 
         log.info("开始校验项目【{}】的考勤数据一致性", sourceProjectNum);
 
-        // 1. 获取第三方平台数据量（按月统计）
-        CollectContext ctx = CollectContext.builder()
-                .sourceProjectNum(sourceProjectNum)
-                .account(config.getAccount())
-                .password(config.getPassword())
-                .beginTime(LocalDateTime.of(2020, 1, 1, 0, 0))
-                .endTime(LocalDateTime.now())
-                .build();
-
-        int remoteCount = apiClient.getAttendanceTotalCount(ctx);
+        // 1. 获取第三方平台数据量（直接调用API，异常可透传）
+        int remoteCount;
+        try {
+            remoteCount = apiClient.getAttendancePage(
+                    sourceProjectNum, 1, 1,
+                    LocalDateTime.of(2020, 1, 1, 0, 0).format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")),
+                    LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")),
+                    config.getAccount(), config.getPassword()
+            ).getInt("total", 0);
+        } catch (Exception e) {
+            if (AntiCrawlerDetector.isTokenExpired(e)) {
+                log.error("项目【{}】考勤一致性校验时Token已过期（401），立即移除Token", sourceProjectNum);
+                tokenManager.removeToken(config.getAccount());
+                return CheckReport.fail("Token已过期（401登录过期），已移除Token，请重新扫码");
+            }
+            log.error("项目【{}】考勤一致性校验获取第三方数据失败: {}", sourceProjectNum, e.getMessage());
+            return CheckReport.fail("获取第三方数据失败: " + e.getMessage());
+        }
 
         // 2. 获取本地数据量
         int localCount = attendanceService.lambdaQuery()
@@ -89,14 +102,22 @@ public class DataConsistencyChecker {
 
         log.info("开始校验项目【{}】的工资数据一致性", sourceProjectNum);
 
-        // 获取第三方平台数据量
-        CollectContext ctx = CollectContext.builder()
-                .sourceProjectNum(sourceProjectNum)
-                .account(config.getAccount())
-                .password(config.getPassword())
-                .build();
-
-        int remoteCount = apiClient.getPayrollTotalCount(ctx);
+        // 获取第三方平台数据量（直接调用API，异常可透传）
+        int remoteCount;
+        try {
+            remoteCount = apiClient.getPayrollPage(
+                    sourceProjectNum, 1, 1, "",
+                    config.getAccount(), config.getPassword()
+            ).getInt("total", 0);
+        } catch (Exception e) {
+            if (AntiCrawlerDetector.isTokenExpired(e)) {
+                log.error("项目【{}】工资一致性校验时Token已过期（401），立即移除Token", sourceProjectNum);
+                tokenManager.removeToken(config.getAccount());
+                return CheckReport.fail("Token已过期（401登录过期），已移除Token，请重新扫码");
+            }
+            log.error("项目【{}】工资一致性校验获取第三方数据失败: {}", sourceProjectNum, e.getMessage());
+            return CheckReport.fail("获取第三方数据失败: " + e.getMessage());
+        }
 
         // 获取本地数据量
         int localCount = payrollService.lambdaQuery()

@@ -112,6 +112,9 @@ public class PersonSyncJob extends AbstractSyncJob {
             log.info("[PERSON API #{}] 返回 total={}", callSeq, thirdPartyTotal);
         } catch (Exception e) {
             log.error("项目【{}】人员探针失败: {}", projectNum, e.getMessage());
+            if (handleTokenExpired(e, account)) {
+                return SyncResult.of(0, 0, 0, 0);
+            }
             if (isAntiCrawlerMessage(e)) {
                 return SyncResult.antiCrawler(0, 0, 0, 0);
             }

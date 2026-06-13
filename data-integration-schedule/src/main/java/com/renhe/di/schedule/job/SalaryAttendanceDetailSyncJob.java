@@ -141,6 +141,9 @@ public class SalaryAttendanceDetailSyncJob extends AbstractSyncJob {
                 }
             } catch (Exception e) {
                 log.error("项目【{}】月份【{}】明细同步失败: {}", projectNum, dateMonth, e.getMessage(), e);
+                if (handleTokenExpired(e, account)) {
+                    return SyncResult.antiCrawler(totalCount, successCount, failCount, skipCount);
+                }
                 if (isAntiCrawlerMessage(e)) {
                     return SyncResult.antiCrawler(totalCount, successCount, failCount, skipCount);
                 }

@@ -1,5 +1,6 @@
 package com.renhe.di.collect.collector;
 
+import com.renhe.di.collect.api.AntiCrawlerDetector;
 import com.renhe.di.collect.model.CollectContext;
 import com.renhe.di.collect.model.PageResult;
 import com.renhe.di.collect.strategy.RateLimitStrategy;
@@ -101,6 +102,24 @@ public abstract class AbstractPagedCollector<T> implements PagedDataCollector<T>
                         getDataType(), ctx.getSourceProjectNum(), pageNum,
                         pageResult.getList().size(),
                         pageResult.getTotal());
+
+                // 内容级跳过：数据尚未到达目标时间范围
+                if (shouldSkipPage(pageResult.getList(), ctx)) {
+                    log.info("[{}] 项目【{}】第{}页数据尚未到达目标时间范围，跳过继续翻页",
+                            getDataType(), ctx.getSourceProjectNum(), pageNum);
+                    if (!pageResult.isHasNext()) {
+                        break;
+                    }
+                    pageNum++;
+                    continue;
+                }
+
+                // 内容级终止：数据已越过目标时间范围
+                if (isBeyondTimeRange(pageResult.getList(), ctx)) {
+                    log.info("[{}] 项目【{}】第{}页数据已超出目标时间范围，终止采集",
+                            getDataType(), ctx.getSourceProjectNum(), pageNum);
+                    break;
+                }
 
                 if (!pageResult.isHasNext()) {
                     log.info("[{}] 项目【{}】分页采集完成，共{}页，总数：{}",
@@ -437,18 +456,9 @@ public abstract class AbstractPagedCollector<T> implements PagedDataCollector<T>
                         getDataType(), ctx.getSourceProjectNum(), pageNum,
                         pageResult.getList().size());
 
-                // 内容级跳过：数据尚未到达目标时间范围（如DESC排序时还在更晚的数据区域）
-                if (shouldSkipPage(pageResult.getList(), ctx)) {
-                    log.info("[{}] 项目【{}】第{}页数据尚未到达目标时间范围，跳过本页继续翻页",
-                            getDataType(), ctx.getSourceProjectNum(), pageNum);
-                    if (!pageResult.isHasNext()) {
-                        break;
-                    }
-                    pageNum++;
-                    continue;
-                }
-
                 // 内容级终止：数据已越过目标时间范围（如DESC排序时已早于目标月份）
+                // 注意：不再使用 shouldSkipPage 批量跳过，避免跳过回调导致数据丢失
+                // 记录级时间过滤已在回调中实现，由业务方自行过滤
                 if (isBeyondTimeRange(pageResult.getList(), ctx)) {
                     log.info("[{}] 项目【{}】第{}页数据已超出目标时间范围，终止流式采集",
                             getDataType(), ctx.getSourceProjectNum(), pageNum);
@@ -456,6 +466,7 @@ public abstract class AbstractPagedCollector<T> implements PagedDataCollector<T>
                 }
 
                 // 回调处理本页数据（清洗+入库），返回 false 则停止
+                // 即使 shouldSkipPage 为 true，也调用回调，由回调做记录级过滤
                 boolean shouldContinue = callback.onPage(pageResult.getList(), pageNum, pageResult.getTotal());
                 if (!shouldContinue) {
                     log.warn("[{}] 项目【{}】第{}页回调返回停止信号，终止流式采集",
@@ -492,30 +503,9 @@ public abstract class AbstractPagedCollector<T> implements PagedDataCollector<T>
     }
 
     /**
-     * 遍历整个异常链，检查是否包含风控/反爬虫关键词
-     * 比 instanceof AntiCrawlerException 更可靠，因为异常可能被 CompletableFuture 等框架包装
+     * 遍历异常链判断是否为风控异常（委托给 AntiCrawlerDetector）
      */
-    private static final String[] ANTI_CRAWLER_KEYWORDS = {
-            "触发风控", "触发反爬虫", "风控", "反爬虫",
-            "系统异常", "请联系管理员"
-    };
-
     private boolean isAntiCrawlerException(Throwable e) {
-        Throwable current = e;
-        while (current != null) {
-            if (current instanceof AntiCrawlerException) {
-                return true;
-            }
-            String msg = current.getMessage();
-            if (msg != null) {
-                for (String keyword : ANTI_CRAWLER_KEYWORDS) {
-                    if (msg.contains(keyword)) {
-                        return true;
-                    }
-                }
-            }
-            current = current.getCause();
-        }
-        return false;
+        return AntiCrawlerDetector.isAntiCrawler(e);
     }
 }

@@ -1,11 +1,9 @@
 dependencies {
     implementation project(':data-integration-core')
-    implementation project(':data-integration-api')
     implementation project(':data-integration-collect')
     implementation project(':data-integration-clean')
     implementation project(':data-integration-store')
     implementation project(':data-integration-dispatch')
-    implementation project(':data-integration-attendancepoll')
 
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-data-redis'

@@ -6,6 +6,7 @@ dependencies {
     implementation project(':data-integration-store')
     implementation project(':data-integration-dispatch')
     implementation project(':data-integration-schedule')
+    implementation project(':data-integration-attendancepoll')
     implementation project(':data-integration-wechat')
     implementation project(':data-integration-ai')
 

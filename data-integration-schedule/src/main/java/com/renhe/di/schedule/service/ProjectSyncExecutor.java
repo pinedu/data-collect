@@ -1,5 +1,6 @@
 package com.renhe.di.schedule.service;
 
+import com.renhe.di.collect.api.AntiCrawlerDetector;
 import com.renhe.di.collect.api.TokenManager;
 import com.renhe.di.schedule.job.SyncResult;
 import com.renhe.di.store.entity.DiProjectConfig;
@@ -90,6 +91,11 @@ public class ProjectSyncExecutor {
                     return new ProjectSyncResult(project.getSourceProjectNum(), false, null, "等待并发许可被中断");
                 } catch (Exception e) {
                     log.error("项目【{}】同步失败：{}", project.getSourceProjectNum(), e.getMessage(), e);
+                    // Token已过期（401登录过期）→ 立即移除Token，避免后续项目无意义重试
+                    if (AntiCrawlerDetector.isTokenExpired(e)) {
+                        log.error("项目【{}】Token已过期（401），立即移除Token", project.getSourceProjectNum());
+                        tokenManager.removeToken(project.getAccount());
+                    }
                     return new ProjectSyncResult(project.getSourceProjectNum(), false, null, e.getMessage());
                 } finally {
                     semaphore.release();

@@ -190,6 +190,9 @@ public class AttendanceFullSyncJob extends AbstractSyncJob {
             return 0;
         } catch (Exception e) {
             log.error("项目【{}】考勤全局探针失败: {}", projectNum, e.getMessage());
+            if (handleTokenExpired(e, account)) {
+                return -1;
+            }
             if (isAntiCrawlerMessage(e)) {
                 return -1;
             }
@@ -532,6 +535,9 @@ public class AttendanceFullSyncJob extends AbstractSyncJob {
             return 0;
         } catch (Exception e) {
             log.error("项目【{}】月份探针失败 [{} ~ {}]: {}", projectNum, beginStr, endStr, e.getMessage());
+            if (handleTokenExpired(e, account)) {
+                return -1;
+            }
             if (isAntiCrawlerMessage(e)) {
                 return -1;
             }

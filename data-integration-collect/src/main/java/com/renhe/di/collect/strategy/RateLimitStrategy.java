@@ -1,5 +1,7 @@
 package com.renhe.di.collect.strategy;
 
+import com.renhe.di.collect.api.AntiCrawlerDetector;
+import com.renhe.di.collect.api.TokenExpiredException;
 import com.renhe.di.core.exception.AntiCrawlerException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -89,10 +91,7 @@ public class RateLimitStrategy {
     /** 账号风控触发时间戳（毫秒），key = account */
     private final ConcurrentHashMap<String, Long> antiCrawlerTriggerTime = new ConcurrentHashMap<>();
 
-    // ---- 限流关键词（匹配即视为反爬虫/风控拦截） ----
-    private static final String[] ANTI_CRAWLER_KEYWORDS = {
-        "账号异常", "频繁", "限制", "系统异常", "请联系管理员"
-    };
+    // 限流关键词已迁移至 AntiCrawlerDetector 统一管理
 
     /**
      * 获取或创建账号级信号量（按数据类型限制并发数）
@@ -214,6 +213,11 @@ public class RateLimitStrategy {
                 recordSuccess(projectNum);
                 return result;
             } catch (Exception e) {
+                // Token已过期（401登录过期）→ 不重试，立即抛出，由TokenRefreshJob统一移除
+                if (e instanceof TokenExpiredException) {
+                    log.warn("[{}] 项目【{}】第{}页Token已过期（401），快速失败不重试", dataType, projectNum, pageNum);
+                    throw e;
+                }
                 retryCount++;
                 lastException = e;
                 String msg = e.getMessage();
@@ -437,33 +441,17 @@ public class RateLimitStrategy {
     // ==================== 工具方法 ====================
 
     /**
-     * 判断是否为反爬虫/风控消息
+     * 判断是否为反爬虫/风控消息（委托给 AntiCrawlerDetector）
      */
     public boolean isAntiCrawlerMessage(String msg) {
-        if (msg == null) return false;
-        for (String keyword : ANTI_CRAWLER_KEYWORDS) {
-            if (msg.contains(keyword)) {
-                return true;
-            }
-        }
-        return false;
+        return AntiCrawlerDetector.matchesMessage(msg);
     }
 
     /**
-     * 遍历异常链判断是否为风控异常（包括 cause 链）
-     * <p>
-     * ThirdPartyApiClient 会将原始异常包装为 RuntimeException("接口请求异常", e)，
-     * 导致顶层消息丢失风控关键词，必须遍历 cause 链才能准确识别。
+     * 遍历异常链判断是否为风控异常（委托给 AntiCrawlerDetector）
      */
     public boolean isAntiCrawlerException(Throwable e) {
-        Throwable current = e;
-        while (current != null) {
-            if (isAntiCrawlerMessage(current.getMessage())) {
-                return true;
-            }
-            current = current.getCause();
-        }
-        return false;
+        return AntiCrawlerDetector.isAntiCrawler(e);
     }
 
     private void sleep(long millis) {
