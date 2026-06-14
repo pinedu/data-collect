@@ -191,7 +191,9 @@ public class AttendancePollTask {
 
             if (!batch.isEmpty()) {
                 try {
-                    int batchSuccess = batchInsertService.batchInsertOrUpdate(batch, attendanceService, 200);
+                    // 批次大小与 pageSize 对齐（第三方 API 只支持 100）
+                    int batchSize = properties.getPageSize();
+                    int batchSuccess = batchInsertService.batchInsertOrUpdate(batch, attendanceService, batchSize);
                     stats[1] += batchSuccess;
                     stats[2] += (batch.size() - batchSuccess);
 

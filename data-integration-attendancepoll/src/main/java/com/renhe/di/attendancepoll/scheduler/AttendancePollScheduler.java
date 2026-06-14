@@ -46,8 +46,11 @@ public class AttendancePollScheduler implements ApplicationRunner {
 
     private ThreadPoolExecutor pollExecutor;
 
-    /** 停滞检测阈值：PROBING/COLLECTING 状态超过此时间视为卡死（10分钟） */
-    private static final long STALL_THRESHOLD_MS = 10 * 60 * 1000L;
+    /** 停滞检测阈值：PROBING/COLLECTING/RECOVERING 状态超过此时间视为卡死（30分钟） */
+    private static final long STALL_THRESHOLD_MS = 30 * 60 * 1000L;
+
+    /** RECOVERING 状态下，若任务已入队但尚未开始执行，给予额外的排队容忍时间（20分钟） */
+    private static final long RECOVERING_QUEUE_TOLERANCE_MS = 20 * 60 * 1000L;
 
     @Autowired
     private AttendancePollProperties properties;
@@ -233,7 +236,7 @@ public class AttendancePollScheduler implements ApplicationRunner {
      * <ul>
      *   <li>COMPLETED / IDLE → 正常结束</li>
      *   <li>stopped=true → 应用关闭</li>
-     *   <li>PROBING/COLLECTING 停滞超过阈值 → 任务可能卡死</li>
+     *   <li>PROBING/COLLECTING/RECOVERING 停滞超过阈值 → 任务可能卡死</li>
      * </ul>
      */
     private void waitForCompletion(String projectNum) {
@@ -255,11 +258,19 @@ public class AttendancePollScheduler implements ApplicationRunner {
             switch (status) {
                 case PROBING:
                 case COLLECTING:
-                    // 活跃状态停滞检测（10分钟无任何页面进展视为卡死）
+                case RECOVERING:
+                    // 活跃状态停滞检测
                     long stuckMs = System.currentTimeMillis() - lastStatusChangeTime;
-                    if (stuckMs > STALL_THRESHOLD_MS) {
-                        log.warn("项目【{}】停滞在 {} 状态已超过 {}s，可能任务卡死，强制结束等待",
-                                projectNum, status, stuckMs / 1000);
+
+                    // RECOVERING 特殊处理：若任务已提交到线程池但尚未开始执行（状态未变为 PROBING），
+                    // 给予额外排队容忍时间，避免极端场景下（40项目同时恢复）误触发停滞检测
+                    long effectiveThreshold = (status == PollStatus.RECOVERING)
+                            ? STALL_THRESHOLD_MS + RECOVERING_QUEUE_TOLERANCE_MS
+                            : STALL_THRESHOLD_MS;
+
+                    if (stuckMs > effectiveThreshold) {
+                        log.warn("项目【{}】停滞在 {} 状态已超过 {}s（阈值{}s），可能任务卡死，强制结束等待",
+                                projectNum, status, stuckMs / 1000, effectiveThreshold / 1000);
                         return;
                     }
                     break;
@@ -282,7 +293,8 @@ public class AttendancePollScheduler implements ApplicationRunner {
                     long waitMs = untilMs - System.currentTimeMillis();
                     if (waitMs <= 0) {
                         log.info("项目【{}】风控冷却已到期，重新提交采集", projectNum);
-                        progressStore.resetStatusForRetry(projectNum);
+                        // 设为 RECOVERING 而非 IDLE，防止 waitForCompletion 误返回
+                        progressStore.saveStatus(projectNum, PollStatus.RECOVERING);
 
                         DiProjectConfig project = projectCache.get(projectNum);
                         if (project != null) {

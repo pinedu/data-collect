@@ -46,11 +46,13 @@ public class ProjectDataSyncPipeline implements ApplicationRunner {
     /** Redis分布式锁 Key */
     private static final String PIPELINE_LOCK_KEY = "pipeline:sync:lock";
     /** 锁过期时间（秒），看门狗会持续续期，此值仅作安全兜底 */
-    private static final long LOCK_EXPIRE_SECONDS = 600;
-    /** 看门狗续期间隔（毫秒），每 LOCK_EXPIRE/3 续一次锁 */
-    private static final long WATCHDOG_INTERVAL_MS = (LOCK_EXPIRE_SECONDS / 3) * 1000;
+    private static final long LOCK_EXPIRE_SECONDS = 60;
+    /** 看门狗续期间隔（毫秒），每 20 秒续一次锁（允许 2 次续期失败） */
+    private static final long WATCHDOG_INTERVAL_MS = 20_000;
     /** 获取锁失败时的重试间隔（毫秒） */
     private static final long LOCK_RETRY_INTERVAL_MS = 30_000;
+    /** 孤儿锁判定阈值：锁存在时间超过此值（毫秒）视为孤儿 */
+    private static final long ORPHAN_LOCK_THRESHOLD_MS = LOCK_EXPIRE_SECONDS * 1000 * 2;
 
     /** 全局停止标志，@PreDestroy 时置为 true */
     private final AtomicBoolean stopped = new AtomicBoolean(false);
@@ -75,9 +77,6 @@ public class ProjectDataSyncPipeline implements ApplicationRunner {
 
     @Autowired
     private PayrollSyncJob payrollSyncJob;
-
-    @Autowired
-    private AttendanceFullSyncJob attendanceFullSyncJob;
 
     @Autowired
     private AttendancePollScheduler attendancePollScheduler;
@@ -379,10 +378,6 @@ public class ProjectDataSyncPipeline implements ApplicationRunner {
         long attendanceDuration = (System.currentTimeMillis() - attendanceStartTime) / 1000;
         log.info("[时序] 项目【{}】考勤完成（耗时{}s）", projectName, attendanceDuration);
 
-        if (payrollResult == null) {
-            log.warn("项目【{}】工资同步失败", projectName);
-        }
-
         long projectDuration = (System.currentTimeMillis() - projectStart) / 1000;
         log.info("--- 项目【{}】本轮同步完成，总耗时：{}秒 ---\n", projectName, projectDuration);
     }
@@ -411,7 +406,7 @@ public class ProjectDataSyncPipeline implements ApplicationRunner {
     }
 
     private boolean tryAcquireLock() {
-        String lockValue = UUID.randomUUID().toString();
+        String lockValue = UUID.randomUUID().toString() + ":" + System.currentTimeMillis();
         Boolean acquired = stringRedisTemplate.opsForValue()
                 .setIfAbsent(PIPELINE_LOCK_KEY, lockValue, Duration.ofSeconds(LOCK_EXPIRE_SECONDS));
         if (Boolean.TRUE.equals(acquired)) {
@@ -419,7 +414,53 @@ public class ProjectDataSyncPipeline implements ApplicationRunner {
             log.info("流水线分布式锁获取成功，lockValue={}", lockValue);
             return true;
         }
+
+        // 锁已存在，检查是否为孤儿锁（持有者已崩溃）
+        String existingLock = stringRedisTemplate.opsForValue().get(PIPELINE_LOCK_KEY);
+        if (isOrphanLock(existingLock)) {
+            log.warn("检测到孤儿锁（已存在 {}ms），强制释放并重新获取", 
+                    System.currentTimeMillis() - parseLockTimestamp(existingLock));
+            stringRedisTemplate.delete(PIPELINE_LOCK_KEY);
+            // 重试获取
+            acquired = stringRedisTemplate.opsForValue()
+                    .setIfAbsent(PIPELINE_LOCK_KEY, lockValue, Duration.ofSeconds(LOCK_EXPIRE_SECONDS));
+            if (Boolean.TRUE.equals(acquired)) {
+                currentLockValue.set(lockValue);
+                log.info("流水线分布式锁获取成功（孤儿锁释放后），lockValue={}", lockValue);
+                return true;
+            }
+        }
         return false;
+    }
+
+    /**
+     * 判断锁是否为孤儿锁（持有者已崩溃，看门狗无法续期）
+     */
+    private boolean isOrphanLock(String lockValue) {
+        if (lockValue == null) return false;
+        String[] parts = lockValue.split(":");
+        if (parts.length != 2) return false; // 旧格式锁，无法判断时间
+        try {
+            long lockTime = Long.parseLong(parts[1]);
+            long lockAge = System.currentTimeMillis() - lockTime;
+            return lockAge > ORPHAN_LOCK_THRESHOLD_MS;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
+    /**
+     * 解析锁值中的时间戳
+     */
+    private long parseLockTimestamp(String lockValue) {
+        if (lockValue == null) return 0;
+        String[] parts = lockValue.split(":");
+        if (parts.length != 2) return 0;
+        try {
+            return Long.parseLong(parts[1]);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 
     private void releaseLock() {

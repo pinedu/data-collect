@@ -1,5 +1,6 @@
 package com.renhe.di.bootstrap.controller;
 
+import com.renhe.di.attendancepoll.scheduler.AttendancePollScheduler;
 import com.renhe.di.core.model.Result;
 import com.renhe.di.schedule.job.*;
 import com.renhe.di.schedule.pipeline.ProjectDataSyncPipeline;
@@ -34,10 +35,7 @@ public class SyncTriggerController {
     private PayrollSyncJob payrollSyncJob;
 
     @Autowired
-    private AttendanceFullSyncJob attendanceFullSyncJob;
-
-    @Autowired
-    private AttendanceIncrementalSyncJob attendanceIncrementalSyncJob;
+    private AttendancePollScheduler attendancePollScheduler;
 
     @Autowired
     private TokenRefreshJob tokenRefreshJob;
@@ -95,21 +93,34 @@ public class SyncTriggerController {
     }
 
     /**
-     * 触发考勤全量同步
+     * 触发考勤同步（使用新的流式采集调度器）
      */
     @PostMapping("/attendance/full")
     public Result<Void> triggerAttendanceFullSync(
             @RequestParam(required = false) String projectNum) {
-        return triggerSync("考勤全量", () -> attendanceFullSyncJob.scheduledExecute());
+        if (projectNum == null || projectNum.isEmpty()) {
+            return Result.fail("请指定项目编号 projectNum");
+        }
+        log.info("手动触发项目【{}】考勤同步", projectNum);
+        new Thread(() -> {
+            try {
+                attendancePollScheduler.triggerProjectAndWait(projectNum);
+                log.info("项目【{}】考勤同步完成", projectNum);
+            } catch (Exception e) {
+                log.error("项目【{}】考勤同步失败", projectNum, e);
+            }
+        }).start();
+        return Result.success();
     }
 
     /**
-     * 触发考勤增量同步
+     * 触发考勤增量同步（已废弃，统一使用全量同步）
      */
     @PostMapping("/attendance/incremental")
-    public Result<Void> triggerAttendanceIncrementalSync(
+    public Result<String> triggerAttendanceIncrementalSync(
             @RequestParam(required = false) String projectNum) {
-        return triggerSync("考勤增量", () -> attendanceIncrementalSyncJob.scheduledExecute());
+        log.warn("考勤增量同步接口已废弃，请使用 /attendance/full");
+        return Result.success("请使用 /attendance/full 接口");
     }
 
     /**
@@ -125,7 +136,7 @@ public class SyncTriggerController {
     // ==================== 单项目全量同步 ====================
 
     /**
-     * 对指定项目执行完整流水线同步
+     * 对指定项目执行完整流水线同步（考勤使用新流式采集）
      */
     @PostMapping("/project/{sourceProjectNum}/full")
     public Result<Void> triggerProjectFullSync(@PathVariable String sourceProjectNum) {
@@ -142,7 +153,7 @@ public class SyncTriggerController {
                 teamSyncJob.syncSingleProject(project);
                 personSyncJob.syncSingleProject(project);
                 payrollSyncJob.syncSingleProject(project);
-                attendanceFullSyncJob.syncSingleProject(project);
+                attendancePollScheduler.triggerProjectAndWait(sourceProjectNum);
                 log.info("项目【{}】全量同步流水线完成", sourceProjectNum);
             } catch (Exception e) {
                 log.error("项目【{}】全量同步流水线失败", sourceProjectNum, e);
